@@ -7,7 +7,7 @@ def round_price_up_to_cent(price: float) -> float:
     cents = math.ceil(price * 100.0)
     return cents / 100.0
 
-def rounding_and_residual_distribution(products, prices_val_unrounded, x_s_val, sell_orders, x_b_val, buy_orders):
+def rounding_and_residual_distribution(products, mcp_prices_val_unrounded, x_s_val, sell_orders, x_b_val, buy_orders):
     """
     Implements EAC Section 8 rounding:
       - prices rounded up to nearest £0.01.
@@ -17,10 +17,10 @@ def rounding_and_residual_distribution(products, prices_val_unrounded, x_s_val, 
     Returns: prices_rounded, accepted_sell_rounded, accepted_buy_rounded
     """
 
-    # Round prices up to nearest penny
-    prices_rounded = {p: round_price_up_to_cent(prices_val_unrounded[p]) for p in products}
+    # Round the market clearing prices up to nearest penny
+    prices_rounded = {p: round_price_up_to_cent(mcp_prices_val_unrounded[p]) for p in products}
 
-    # Compute unrounded accepted sell volumes
+    # How much of each sell order is accepted unrounded
     accepted_unrounded_sell = {}
     for s in sell_orders:
         ratio = float(x_s_val.get(s["id"], 0.0) or 0.0)
@@ -37,7 +37,7 @@ def rounding_and_residual_distribution(products, prices_val_unrounded, x_s_val, 
         if s["type"] == "substitutable_child":
             accepted_sell_rounded[s["id"]] = int(math.floor(unrounded + 1e-9))
         else:
-            accepted_sell_rounded[s["id"]] = int(round(unrounded))
+            accepted_sell_rounded[s["id"]] = int(round(unrounded + 1e-9))
 
     # Within each sell order, distribute rounded accepted volume to products proportionally, adjusting for rounding errors
     total_rounded_sells_by_product = {p: 0 for p in products}
@@ -56,6 +56,7 @@ def rounding_and_residual_distribution(products, prices_val_unrounded, x_s_val, 
             share = int(math.floor(raw + 1e-9))
             shares.append((p, share, raw))
             remaining -= share
+        # We still have 'remaining' to distribute due to flooring; give one extra to those with largest fractional parts
         shares.sort(key=lambda x: (x[2] - int(math.floor(x[2])), x[0]), reverse=True)
         idx = 0
         while remaining > 0:
@@ -71,12 +72,13 @@ def rounding_and_residual_distribution(products, prices_val_unrounded, x_s_val, 
     for b in buy_orders:
         ratio = float(x_b_val.get(b["id"], 0.0) or 0.0)
         unrounded = b["volume"] * ratio
-        accepted_buy_rounded[b["id"]] = int(round(unrounded))
+        accepted_buy_rounded[b["id"]] = int(round(unrounded + 1e-9))
 
     buys_by_product = defaultdict(list)
     for b in buy_orders:
         buys_by_product[b["product"]].append(b)
 
+    # Now adjust buy rounded volumes to fix residuals per product
     for p in products:
         rounded_buys_sum = sum(accepted_buy_rounded[b["id"]] for b in buys_by_product.get(p, []))
         rounded_sells_sum = total_rounded_sells_by_product.get(p, 0)
