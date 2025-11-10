@@ -1,4 +1,5 @@
 from eac.rounding import round_price_up_to_cent, rounding_and_residual_distribution
+from eac import SellOrder, BuyOrder, Basket
 
 # Test rounding of both positive and negative prices 
 def test_round_price_up_to_cent():
@@ -18,23 +19,22 @@ def test_comprehensive_rounding_with_residual():
     x_s_val = {"S1": 0.78, "S2": 0.75}
     sell_orders = [
         # Substitutable child: 10 * 0.78 = 7.8 → floor → 7
-        {"id": "S1", "type": "substitutable_child", "qty": {"P1": 10}},
+        SellOrder(id="S1", basket="A", qty={"P1": 10}, price=45.0, type="substitutable_child"),
         # Parent across P1 and P2: total=30, accept 30*0.75=22.5 → round → 23
         # Then distribute 23 proportionally: P1 gets 20*(23/30)=15.33→ 15, P2 gets 10*(23/30)=7.66→7
         # But 15+7=22, so need to distribute 1 more based on fractional remainder
         # That one more is given to P1 as it has the larger fractional part (0.33 vs 0.66)
-        {"id": "S2", "type": "parent", "qty": {"P1": 20, "P2": 10}}
+        SellOrder(id="S2", basket="B", qty={"P1": 20, "P2": 10}, price=55.0, type="parent")
     ]
-    
     # Buy orders
     x_b_val = {"B1": 0.75, "B2": 0.65, "B3": 0.80}
     buy_orders = [
         # P1: 10*0.75 = 7.5 → 8
-        {"id": "B1", "product": "P1", "volume": 10, "price": 55},
+        BuyOrder(id="B1", product="P1", volume=10, price=55.0),
         # P2: 10*0.65 = 6.5 → 7 
-        {"id": "B2", "product": "P2", "volume": 10, "price": 65},
+        BuyOrder(id="B2", product="P2", volume=10, price=65.0),
         # P1: 10*0.80 = 8.0 → 8
-        {"id": "B3", "product": "P1", "volume": 10, "price": 52}
+        BuyOrder(id="B3", product="P1", volume=10, price=52.0)
     ]
     
     prices, sells, buys = rounding_and_residual_distribution(
