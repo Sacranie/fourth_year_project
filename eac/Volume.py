@@ -20,7 +20,7 @@ class VolumeMILP:
         if problems:
             raise ValueError("Unit capacity validation failed:\n" + "\n".join(problems))
 
-        buy_orders_extended = [dict(b) for b in buy_orders]
+        buy_orders_extended = [b.__dict__.copy() for b in buy_orders]
         if allow_overholding_hook:
             for p, vol in allow_overholding_hook.items():
                 if vol > 0:
@@ -39,12 +39,12 @@ class VolumeMILP:
         # x_s
         x_s = {}
         for s in sell_orders:
-            if s["type"] == "parent":
-                x_s[s["id"]] = pulp.LpVariable(f"x_s_{s['id']}", lowBound=0, upBound=1, cat="Binary")
+            if s.type == "parent":
+                x_s[s.id] = pulp.LpVariable(f"x_s_{s.id}", lowBound=0, upBound=1, cat="Binary")
             else:
-                low = float(s.get("min_acceptance_ratio", 0.0))
+                low = float(s.min_acceptance_ratio)
                 low = max(0.0, min(1.0, low))
-                x_s[s["id"]] = pulp.LpVariable(f"x_s_{s['id']}", lowBound=low, upBound=1, cat="Continuous")
+                x_s[s.id] = pulp.LpVariable(f"x_s_{s.id}", lowBound=low, upBound=1, cat="Continuous")
 
         # y_parent
         y_parent = {}
@@ -53,26 +53,26 @@ class VolumeMILP:
 
         parents_by_basket = {}
         for s in sell_orders:
-            if s["type"] == "parent":
-                parents_by_basket[s["basket"]] = s["id"]
+            if s.type == "parent":
+                parents_by_basket[s.basket] = s.id
 
         for basket_id, parent_order_id in parents_by_basket.items():
             prob += x_s[parent_order_id] == y_parent[basket_id], f"parent_accept_equals_y_{basket_id}"
 
         for s in sell_orders:
-            if s["type"] in ("child", "substitutable_child"):
-                prob += x_s[s["id"]] <= y_parent[s["basket"]], f"child_less_than_parent_{s['id']}"
+            if s.type in ("child", "substitutable_child"):
+                prob += x_s[s.id] <= y_parent[s.basket], f"child_less_than_parent_{s.id}"
 
         subs_by_basket = defaultdict(list)
         for s in sell_orders:
-            if s["type"] == "substitutable_child":
-                subs_by_basket[s["basket"]].append(s["id"])
+            if s.type == "substitutable_child":
+                subs_by_basket[s.basket].append(s.id)
 
         for basket_id, subs in subs_by_basket.items():
             prob += pulp.lpSum([x_s[sid] for sid in subs]) <= 1.0, f"subs_family_basket_{basket_id}"
 
         for b_id, info in baskets.items():
-            for other in info.get("concomitant", []):
+            for other in info.concomitant:
                 if b_id < other:
                     prob += y_parent[b_id] + y_parent[other] <= 1.0, f"mutual_exclusive_{b_id}_{other}"
 
@@ -87,9 +87,9 @@ class VolumeMILP:
             sell_sum = []
             buy_sum = []
             for s in sell_orders:
-                q = s["qty"].get(p, 0.0)
+                q = s.qty.get(p, 0.0)
                 if abs(q) > 1e-12:
-                    sell_sum.append(q * x_s[s["id"]])
+                    sell_sum.append(q * x_s[s.id])
             for b in buy_orders_extended:
                 if b["product"] == p:
                     buy_sum.append(b["volume"] * x_b[b["id"]])
@@ -103,20 +103,21 @@ class VolumeMILP:
             prob += x_b[b["id"]] >= 0.0
 
         for s in sell_orders:
-            prob += x_s[s["id"]] <= 1.0
-            prob += x_s[s["id"]] >= 0.0
+            prob += x_s[s.id] <= 1.0
+            prob += x_s[s.id] >= 0.0
 
         welfare_terms = []
         for b in buy_orders_extended:
             welfare_terms.append(b["price"] * b["volume"] * x_b[b["id"]])
         for s in sell_orders:
-            total_qty = sum(s["qty"].get(p, 0.0) for p in products)
-            welfare_terms.append(- s["price"] * total_qty * x_s[s["id"]])
+            total_qty = sum(s.qty.get(p, 0.0) for p in products)
+            welfare_terms.append(- s.price * total_qty * x_s[s.id])
 
         prob += pulp.lpSum(welfare_terms), "Welfare"
         return prob, x_b, x_s, y_parent, buy_orders_extended
 
     def solve_with_pricing_loop(self, products, buy_orders, sell_orders, baskets, unit_capacity_registry=None, substitutability_families_buy=None, allow_overholding_hook=None, msg: int = 0):
+        
         prob, x_b, x_s, y_parent, buy_orders_extended = self.build_problem(
             products, buy_orders, sell_orders, baskets, unit_capacity_registry, substitutability_families_buy, allow_overholding_hook
         )
