@@ -4,6 +4,12 @@ import pulp
 from .solver import PulpSolverBackend
 from .Validators import build_loop_families
 
+"""
+What does this do?
+Implements the pricing linear program for the EAC market clearing process.
+It sets up and solves a linear program to determine market clearing prices
+"""
+
 PRICE_MIN = -1000.0
 PRICE_MAX = 10000.0
 
@@ -22,6 +28,7 @@ class PricingLP:
         p_vars = {p: pulp.LpVariable(f"price_{p}", lowBound=self.price_min,
                                      upBound=self.price_max, cat="Continuous") for p in products}
 
+        # Objective: Minimize procurement cost
         procurement_terms = []
         for s in sell_orders:
             x_fixed = float(x_s_val.get(s.id, 0.0))
@@ -32,11 +39,11 @@ class PricingLP:
                         procurement_terms.append(p_vars[p] * q * x_fixed)
 
         if procurement_terms:
-            price_prob += pulp.lpSum(procurement_terms), "ProcurementCost"
+            price_prob += pulp.lpSum(procurement_terms), "ProcurementCost" 
         else:
             price_prob += 0.0, "ProcurementCost"
 
-        # child non-negative surplus
+        # Constraints: Non-negative profit for sell orders         
         for s in sell_orders:
             x_fixed = float(x_s_val.get(s.id, 0.0) or 0.0)
             if x_fixed <= 1e-12:
@@ -55,6 +62,7 @@ class PricingLP:
         loop_families = build_loop_families(baskets)
         baskets_in_loops = set().union(*loop_families) if loop_families else set()
 
+        # Constraints: Non-negative net profit for baskets and loops
         for basket_id, sells in sells_by_basket.items():
             if basket_id in baskets_in_loops:
                 continue
@@ -69,6 +77,7 @@ class PricingLP:
             if net_terms:
                 price_prob += pulp.lpSum(net_terms) >= 0.0, f"basket_net_{basket_id}"
 
+        # Constraints: Non-negative net profit for loop families
         for fam in loop_families:
             fam_orders = []
             for b in fam:
