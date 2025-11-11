@@ -2,7 +2,9 @@ from .PricingLP import PricingLP
 from .Volume import VolumeMILP
 from .solver import PulpSolverBackend
 from .rounding import rounding_and_residual_distribution
-
+"""
+Run the EAC market clearing process, including pricing and volume determination,
+"""
 def run_market(products, buy_orders, sell_orders, baskets,
                unit_capacity_registry=None, overholding=None, msg=0):
     backend = PulpSolverBackend(msg=msg)

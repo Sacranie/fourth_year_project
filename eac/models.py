@@ -1,6 +1,13 @@
 from dataclasses import dataclass
 from typing import Mapping, Optional, List, Dict
 
+"""
+These are the different model entities used in EAC.
+We have SellOrder, BuyOrder, Basket.
+SellOrder can be of type 'parent', 'child', or 'substitutable_child'.
+BuyOrder represents a buy order for a specific product.
+Basket represents a basket of Sell orders with possible concomitant relationships.
+"""
 
 @dataclass(frozen=True)
 class SellOrder:
