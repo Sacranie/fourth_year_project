@@ -1,6 +1,6 @@
 from collections import defaultdict, deque
 from typing import Dict, List, Set
-from .models import Basket, SellOrder
+from eac.models import Basket, SellOrder
 
 def build_loop_families(baskets: Dict[str, Basket]) -> List[Set[str]]:
     """

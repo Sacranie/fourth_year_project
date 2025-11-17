@@ -1,8 +1,8 @@
 from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
 import pulp
-from .solver import PulpSolverBackend
-from .Validators import build_loop_families
+from eac.solver import PulpSolverBackend
+from eac.Validators import build_loop_families
 
 """
 What does this do?

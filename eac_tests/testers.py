@@ -16,7 +16,8 @@ Paradoxical buy rejection (non-paradoxical buy that would lose surplus) — ensu
 Overholding (allow_overholding_hook) — add OVERHOLD buy(s) to absorb supply when you want forced balance.
 
 """
-from eac import run_market, SellOrder, BuyOrder, Basket
+from eac.models import SellOrder, BuyOrder, Basket
+from eac.orchestrator import run_market
 
 # Trivial single product, single parent sell vs single buy — check basic balance, price, rounding.
 def test_eac_single_buy_order_single_sell_order():
