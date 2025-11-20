@@ -4,7 +4,6 @@ from typing import Dict, List, Tuple
 import json
 import urllib.request
 from eac.orchestrator import run_market
-import time
 
 
 def load_orders_for_period(
@@ -145,13 +144,13 @@ if __name__ == "__main__":
     BUY_URL = "https://api.neso.energy/api/3/action/datastore_search?resource_id=1cf68f59-8eb8-4f1d-bccf-11b5a47b24e5"
     DELIVERY_START = "2025-04-01T06:00:00"
     DELIVERY_END = "2025-04-01T10:00:00"
-    test_limit = 1000000000  # Limit for testing purposes
+    TEST_LIMIT = 1000000000  # Large number to fetch all records
     buys, sells, basket_registry, products, expected_prices, unit_capacity_registry, overholding, welfare_buy_expected, welfare_sell_expected = process_orders(
         SELL_URL,
         BUY_URL,
         DELIVERY_START,
         DELIVERY_END,
-        test_limit
+        TEST_LIMIT
     )
     print(len(buys), "buy orders loaded.")
     print(len(sells), "sell orders loaded.")

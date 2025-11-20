@@ -163,7 +163,6 @@ for (start, end), bucket in sorted(time_graph.items()):
     print(f"Sell orders: {len(sells)}")
     print(f"Baskets: {len(baskets)}")
     print(f"Products: {len(products)}")
-    time.sleep(5)
     
     
 
@@ -176,15 +175,36 @@ for (start, end), bucket in sorted(time_graph.items()):
         unit_capacity_registry=unit_capacity_registry,
     )
     
-    print(f"\nResults:")
-    print(results)
-    
-    if expected_prices:
-        print(f"\nExpected clearing prices:")
-        for product, price in sorted(expected_prices.items()):
-            print(f"  {product}: {price}")
-    print()
+    print(f"\nStatus: {results.get('milp_status')} / {results.get('prices_status')}")
+    print(f"Final: {results.get('final')}")
 
-print("="*80)
-print("MARKET CLEARING COMPLETE")
-print("="*80)
+    if results.get("prices_rounded"):
+        computed_prices = results["prices_rounded"]
+        
+        print(f"\n{'='*80}")
+        print("PRICE COMPARISON")
+        print(f"{'='*80}")
+        print(f"{'Product':<40} {'Expected':>12} {'Computed':>12} {'Match':>8}")
+        print("-"*80)
+        
+        matches = 0
+        total = 0
+        
+        for product in sorted(products):
+            expected = expected_prices.get(product)
+            computed = computed_prices.get(product)
+            
+            if expected is not None and computed is not None:
+                match = "✓" if abs(expected - computed) < 0.01 else "✗"
+                if abs(expected - computed) < 0.01:
+                    matches += 1
+                total += 1
+                print(f"{product:<40} £{expected:>11.2f} £{computed:>11.2f} {match:>8}")
+        
+        print("-"*80)
+        print(f"Match rate: {matches}/{total} ({100*matches/total if total > 0 else 0:.1f}%)")
+
+    print()
+    print("="*80)
+    print("MARKET CLEARING COMPLETE")
+    print("="*80)
