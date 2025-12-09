@@ -18,7 +18,7 @@ class SellOrder:
     service: str
     deliveryStart: str
     deliveryEnd: str
-    orderID: str
+    orderID: int
     orderType: str  # 'parent' | 'child' | 'substitutable_child'
     auctionProduct: str
     quantity: float
