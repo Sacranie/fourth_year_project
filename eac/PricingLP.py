@@ -22,7 +22,7 @@ class PricingLP:
         self.price_max = price_max
 
     def solve(self, products: List[str], sell_orders: List, x_s_val: Dict[str, float],
-              baskets: List, global_loop_families: Dict = None) -> Tuple[Dict[str, float], pulp.LpProblem, str]:
+              baskets: List) -> Tuple[Dict[str, float], pulp.LpProblem, str]:
         
         price_prob = pulp.LpProblem("EAC_Pricing", pulp.LpMinimize)
         p_vars = {p: pulp.LpVariable(f"price_{p}", lowBound=self.price_min,
@@ -63,12 +63,10 @@ class PricingLP:
         for s in sell_orders:
             sells_by_basket[s.basketID].append(s)
 
-        # Build loop families - filter to baskets in this window (window being auctionID)
         basket_ids_in_window = set(s.basketID for s in sell_orders)
         baskets_in_window = [b for b in baskets if b.id in basket_ids_in_window]
         loop_families = build_loop_families(baskets_in_window)
         
-        # Get basket IDs that are in loops
         baskets_in_loops = set()
         for (loop_id, auction_id), basket_ids in loop_families.items():
             baskets_in_loops.update(basket_ids)

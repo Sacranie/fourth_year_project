@@ -122,9 +122,7 @@ class VolumeMILP:
         if global_loop_families:
             for (loop_id, auction_id), basket_ids in global_loop_families.items():
                 if len(basket_ids) > 1:
-                    # All baskets in this loop must have same y_parent value
                     base_id = basket_ids[0]
-                    # Only enforce constraint if both baskets have variables in this window
                     for other_id in basket_ids[1:]:
                         if base_id in y_parent and other_id in y_parent:
                             prob += y_parent[base_id] == y_parent[other_id], f"cross_window_loop_{base_id}_{other_id}"
@@ -191,7 +189,7 @@ class VolumeMILP:
 
             seen_parent_patterns.add(accepted_parents)
             prices_unrounded_candidate, price_problem_candidate, price_status_candidate = self.pricing.solve(
-                products, sell_orders, x_s_val, baskets, global_loop_families
+                products, sell_orders, x_s_val, baskets
             )
             price_problem = price_problem_candidate
             prices_unrounded = prices_unrounded_candidate
