@@ -48,12 +48,12 @@ class SellOrder:
 @dataclass(frozen=True)
 class BuyOrder:
     auctionID: int
-    orderID: str
+    orderID: int
     service: str
     auctionProduct: str
     deliveryStart: str
     deliveryEnd: str
-    quanity: float
+    quantity: float
     price: float
     paradoxical: bool = True
     min_acceptance_ratio: float = 0.0
@@ -62,12 +62,12 @@ class BuyOrder:
     def from_dict(d: Dict) -> "BuyOrder":
         return BuyOrder(
             auctionID=int(d.get("auctionID", 0)),
-            orderID=d.get("orderID", ""),
+            orderID=int(d.get("orderID", 0)),
             service=d.get("service", ""),
             auctionProduct=d.get("auctionProduct", ""),
             deliveryStart=d.get("deliveryStart", ""),
             deliveryEnd=d.get("deliveryEnd", ""),
-            quanity=float(d.get("quanity", 0.0)),
+            quantity=float(d.get("quantity", 0.0)),
             price=float(d.get("price", 0.0)),
             paradoxical=bool(d.get("paradoxical", True)),
             min_acceptance_ratio=float(d.get("min_acceptance_ratio", 0.0)),
@@ -76,7 +76,7 @@ class BuyOrder:
 
 @dataclass
 class Basket:
-    id: str
+    id: int
     auctionID: int
     unit: str
     concomitant: List[str]
@@ -86,7 +86,7 @@ class Basket:
     @staticmethod
     def from_dict(d: Dict) -> "Basket":
         return Basket(
-            id=d.get("id"), 
+            id=int(d.get("id", 0)), 
             auctionID=int(d.get("auctionID", 0)),
             unit=d.get("unit"), 
             concomitant=list(d.get("concomitant", [])), 

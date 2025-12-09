@@ -16,7 +16,7 @@ class VolumeMILP:
     def build_problem(self, products, buy_orders, sell_orders, baskets, unit_capacity_registry=None, substitutability_families_buy=None, allow_overholding_hook=None):
         substitutability_families_buy = substitutability_families_buy or {}
         unit_capacity_registry = unit_capacity_registry or {}
-        problems = validate_unit_capacity([s for s in sell_orders], baskets, unit_capacity_registry)
+        problems = validate_unit_capacity(sell_orders, unit_capacity_registry)
         if problems:
             raise ValueError("Unit capacity validation failed:\n" + "\n".join(problems))
 
@@ -25,7 +25,7 @@ class VolumeMILP:
             for p, vol in allow_overholding_hook.items():
                 if vol > 0:
                     oid = f"OVERHOLD_{p}"
-                    buy_orders_extended.append({"id": oid, "product": p, "price": 0.0, "volume": vol, "family": None, "paradoxical": True})
+                    buy_orders_extended.append({"orderID": oid, "auctionProduct": p, "price": 0.0, "quanity": vol, "paradoxical": True})
 
         prob = pulp.LpProblem("EAC_Volume", pulp.LpMaximize)
 
@@ -34,84 +34,110 @@ class VolumeMILP:
         for b in buy_orders_extended:
             low = float(b.get("min_acceptance_ratio", 0.0))
             low = max(0.0, min(1.0, low))
-            x_b[b["id"]] = pulp.LpVariable(f"x_b_{b['id']}", lowBound=low, upBound=1, cat="Continuous")
+            bid = b.get("orderID", b.get("id", ""))
+            x_b[bid] = pulp.LpVariable(f"x_b_{bid}", lowBound=low, upBound=1, cat="Continuous")
 
         # x_s
         x_s = {}
         for s in sell_orders:
-            if s.type == "parent":
-                x_s[s.id] = pulp.LpVariable(f"x_s_{s.id}", lowBound=0, upBound=1, cat="Binary")
+            if s.orderType == "parent":
+                x_s[s.orderID] = pulp.LpVariable(f"x_s_{s.orderID}", lowBound=0, upBound=1, cat="Binary")
             else:
                 low = float(s.min_acceptance_ratio)
                 low = max(0.0, min(1.0, low))
-                x_s[s.id] = pulp.LpVariable(f"x_s_{s.id}", lowBound=low, upBound=1, cat="Continuous")
+                x_s[s.orderID] = pulp.LpVariable(f"x_s_{s.orderID}", lowBound=low, upBound=1, cat="Continuous")
 
-        # y_parent
         y_parent = {}
-        for b_id in baskets.keys():
-            y_parent[b_id] = pulp.LpVariable(f"y_parent_{b_id}", lowBound=0, upBound=1, cat="Binary")
+        all_basket_ids = set(s.basketID for s in sell_orders)
+        
+        for basket_id in all_basket_ids:
+            y_parent[basket_id] = pulp.LpVariable(f"y_parent_{basket_id}", lowBound=0, upBound=1, cat="Binary")
 
-        parents_by_basket = {}
+        parents_by_basket = defaultdict(list)
         for s in sell_orders:
-            if s.type == "parent":
-                parents_by_basket[s.basket] = s.id
+            if s.orderType == "parent":
+                parents_by_basket[s.basketID].append(s.orderID)
 
-        for basket_id, parent_order_id in parents_by_basket.items():
-            prob += x_s[parent_order_id] == y_parent[basket_id], f"parent_accept_equals_y_{basket_id}"
+        for basket_id, parent_ids in parents_by_basket.items():
+            num_parents = len(parent_ids)
+            
+            for parent_id in parent_ids:
+                prob += y_parent[basket_id] <= x_s[parent_id], f"y_parent_le_parent_{basket_id}_{parent_id}"
+            
+            prob += y_parent[basket_id] >= pulp.lpSum([x_s[pid] for pid in parent_ids]) - num_parents + 1, f"y_parent_from_all_parents_{basket_id}"
 
+        # Child constraint: child can only be accepted if ALL parent orders in the basket are accepted
         for s in sell_orders:
-            if s.type in ("child", "substitutable_child"):
-                prob += x_s[s.id] <= y_parent[s.basket], f"child_less_than_parent_{s.id}"
+            if s.orderType in ("child", "substitutable_child"):
+                prob += x_s[s.orderID] <= y_parent[s.basketID], f"child_requires_all_parents_{s.orderID}"
 
         subs_by_basket = defaultdict(list)
         for s in sell_orders:
-            if s.type == "substitutable_child":
-                subs_by_basket[s.basket].append(s.id)
+            if s.orderType == "substitutable_child":
+                subs_by_basket[s.basketID].append(s.orderID)
 
         for basket_id, subs in subs_by_basket.items():
             prob += pulp.lpSum([x_s[sid] for sid in subs]) <= 1.0, f"subs_family_basket_{basket_id}"
 
-        for b_id, info in baskets.items():
-            for other in info.concomitant:
-                if b_id < other:
-                    prob += y_parent[b_id] + y_parent[other] <= 1.0, f"mutual_exclusive_{b_id}_{other}"
+        # Enforce mutual exclusivity: at most ONE basket from a concomitant group can be accepted
+        concomitant_groups = {}
+        for b in baskets:
+            if len(b.concomitant) > 0:
+                # Convert b.id to int for consistent grouping
+                basket_id_key = b.id
+                # Group key: sorted list of basket IDs (all as ints)
+                group_members = sorted([basket_id_key] + b.concomitant)
+                group_key = tuple(group_members)
+                if group_key not in concomitant_groups:
+                    concomitant_groups[group_key] = group_members
+        
+        for group_key, group_members in concomitant_groups.items():
+            # Only add constraint if baskets are in y_parent
+            baskets_in_group = [b for b in group_members if b in y_parent]
+            if baskets_in_group:
+                prob += pulp.lpSum([y_parent[b] for b in baskets_in_group]) <= 1.0, f"mutual_exclusive_{group_key}"
 
+        # Loop families: baskets with same (looped_to, auctionID) must have same y_parent value
         loop_families = build_loop_families(baskets)
-        for fam in loop_families:
-            fam = list(fam)
-            base = fam[0]
-            for other in fam[1:]:
-                prob += y_parent[base] == y_parent[other], f"loop_eq_{base}_{other}"
+        for (loop_id, auction_id), basket_ids in loop_families.items():
+            if len(basket_ids) > 1:
+                base = basket_ids[0]
+                for other in basket_ids[1:]:
+                    prob += y_parent[base] == y_parent[other], f"loop_eq_{base}_{other}"
 
+        # Product balance constraints
         for p in products:
             sell_sum = []
             buy_sum = []
             for s in sell_orders:
-                q = s.qty.get(p, 0.0)
-                if abs(q) > 1e-12:
-                    sell_sum.append(q * x_s[s.id])
+                if s.auctionProduct == p:
+                    sell_sum.append(s.qty * x_s[s.orderID])
             for b in buy_orders_extended:
-                if b["product"] == p:
-                    buy_sum.append(b["volume"] * x_b[b["id"]])
-            prob += pulp.lpSum(sell_sum) == pulp.lpSum(buy_sum), f"balance_product_{p}"
+                if b.get("auctionProduct") == p:
+                    bid = b.get("orderID")
+                    buy_sum.append(b.get("quantity") * x_b[bid])
+            if sell_sum or buy_sum:
+                prob += pulp.lpSum(sell_sum) == pulp.lpSum(buy_sum), f"balance_product_{p}"
 
         for fam_id, members in (substitutability_families_buy or {}).items():
             prob += pulp.lpSum([x_b[bid] for bid in members]) <= 1.0, f"buy_subs_family_{fam_id}"
 
-        for b in buy_orders_extended:
-            prob += x_b[b["id"]] <= 1.0
-            prob += x_b[b["id"]] >= 0.0
+        # Bounds
+        for bid in x_b:
+            prob += x_b[bid] <= 1.0
+            prob += x_b[bid] >= 0.0
 
-        for s in sell_orders:
-            prob += x_s[s.id] <= 1.0
-            prob += x_s[s.id] >= 0.0
+        for sid in x_s:
+            prob += x_s[sid] <= 1.0
+            prob += x_s[sid] >= 0.0
 
+        # Objective: Maximize welfare
         welfare_terms = []
         for b in buy_orders_extended:
-            welfare_terms.append(b["price"] * b["volume"] * x_b[b["id"]])
+            bid = b.get("orderID", b.get("id", ""))
+            welfare_terms.append(b["price"] * b.get("quantity", 0) * x_b[bid])
         for s in sell_orders:
-            total_qty = sum(s.qty.get(p, 0.0) for p in products)
-            welfare_terms.append(- s.price * total_qty * x_s[s.id])
+            welfare_terms.append(- s.price * s.quantity * x_s[s.orderID])
 
         prob += pulp.lpSum(welfare_terms), "Welfare"
         return prob, x_b, x_s, y_parent, buy_orders_extended
@@ -175,14 +201,14 @@ class VolumeMILP:
             buy_problematic = False
             violating_buys = []
             for b in buy_orders_extended:
-                bid = b["id"]
+                bid = b.get("orderID", b.get("id", ""))
                 ratio = float(x_b_val.get(bid, 0.0) or 0.0)
                 if ratio <= 1e-12:
                     continue
-                product = b["product"]
+                product = b.get("auctionProduct", b.get("product", ""))
                 clearing_price = prices_unrounded.get(product, 0.0)
                 surplus_per_mw = b["price"] - clearing_price
-                total_surplus = surplus_per_mw * b["volume"] * ratio
+                total_surplus = surplus_per_mw * b.get("quanity", b.get("volume", 0)) * ratio
                 if total_surplus < -1e-9 and not bool(b.get("paradoxical", True)):
                     buy_problematic = True
                     violating_buys.append((bid, total_surplus))
