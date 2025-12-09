@@ -62,6 +62,7 @@ class BuyOrder:
 @dataclass
 class Basket:
     id: str
+    auctionID: int
     unit: str
     concomitant: List[str]
     looped_to: Optional[str]
@@ -71,6 +72,7 @@ class Basket:
     def from_dict(d: Dict) -> "Basket":
         return Basket(
             id=d.get("id"), 
+            auctionID=int(d.get("auctionID", 0)),
             unit=d.get("unit"), 
             concomitant=list(d.get("concomitant", [])), 
             looped_to=d.get("looped_to")

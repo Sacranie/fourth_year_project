@@ -2,42 +2,23 @@ from collections import defaultdict, deque
 from typing import Dict, List, Set
 from eac.models import Basket, SellOrder
 
-def build_loop_families(baskets: Dict[str, Basket]) -> List[Set[str]]:
+def build_loop_families(baskets: List[Basket]) -> Dict:
     """
-    Build connected components of looped baskets (treat looped_to links as 
-    undirected).
-    Returns list of sets, each set containing basket IDs of a looped family 
-    (size>1 only).
+    We need to determine the loop families in the basket graph.
+    A loop family is a connected component in the undirected graph formed by
+    the baskets and their looped_to relationships.
+    We have to make sure that we are taking into account that baskets belong to a specific auctionID.
     """
-    adjacency = defaultdict(set)
-    for b_id, info in baskets.items():
-        if info.looped_to:
-            adjacency[b_id].add(info.looped_to)
-            adjacency[info.looped_to].add(b_id)
+    adjacency = defaultdict(list)
+    for b in baskets:
+        if b.looped_to and b.auctionID:
+            adjacency[(b.looped_to, b.auctionID)].append(b.id)
 
-    visited = set()
-    families = []
-    for start in baskets.keys():
-        if start in visited:
-            continue
-        q = deque([start])
-        comp = set()
-        while q:
-            cur = q.popleft()
-            if cur in comp:
-                continue
-            comp.add(cur)
-            visited.add(cur)
-            for n in adjacency[cur]:
-                if n not in comp:
-                    q.append(n)
-        if len(comp) > 1:
-            families.append(comp)
-    return families
+    return adjacency
 
 def validate_unit_capacity(
     sell_orders: List[SellOrder], 
-    baskets: Dict[str, Basket], 
+    baskets: List[Basket], 
     unit_capacity_registry: Dict[str, float]
 ) -> List[str]:
     """
@@ -49,11 +30,13 @@ def validate_unit_capacity(
     for s in sell_orders:
         sells_by_basket[s.basket].append(s)
 
+    baskets_dict = {b.id: b for b in baskets}
+
     for basket_id, sells in sells_by_basket.items():
-        if basket_id not in baskets:
+        if basket_id not in baskets_dict:
             problems.append(f"Undefined basket {basket_id}")
             continue
-        unit = baskets[basket_id].unit
+        unit = baskets_dict[basket_id].unit
         cap = unit_capacity_registry.get(unit)
         if cap is None:
             problems.append(f"Unit capacity not registered for unit {unit} (basket {basket_id})")
