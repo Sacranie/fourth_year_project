@@ -21,7 +21,7 @@ class SellOrder:
     orderID: str
     orderType: str  # 'parent' | 'child' | 'substitutable_child'
     auctionProduct: str
-    qty: float
+    quantity: float
     price: float
     min_acceptance_ratio: float = 0.0
 
@@ -39,7 +39,7 @@ class SellOrder:
             orderID=d.get("orderID", ""),
             orderType=d.get("orderType", ""),
             auctionProduct=d.get("auctionProduct", ""),
-            qty=float(d.get("qty", 0.0)),
+            quantity=float(d.get("quantity", 0.0)),
             price=float(d.get("price", 0.0)),
             min_acceptance_ratio=float(d.get("min_acceptance_ratio", 0.0)),
         )
