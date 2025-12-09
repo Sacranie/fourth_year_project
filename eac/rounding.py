@@ -25,7 +25,7 @@ def rounding_and_residual_distribution(products, mcp_prices_val_unrounded, x_s_v
     for s in sell_orders:
         ratio = float(x_s_val.get(s.orderID, 0.0) or 0.0)
         # SellOrder has qty (scalar), not per-product qty dictionary
-        total_qty = s.qty
+        total_qty = s.quantity
         accepted_unrounded_sell[s.orderID] = total_qty * ratio
 
     # Round accepted sell volumes according to type
@@ -53,8 +53,8 @@ def rounding_and_residual_distribution(products, mcp_prices_val_unrounded, x_s_v
     accepted_buy_rounded = {}
     for b in buy_orders:
         ratio = float(x_b_val.get(b.orderID, 0.0) or 0.0)
-        # BuyOrder has field 'quanity' (with typo)
-        unrounded = b.quanity * ratio
+        # BuyOrder has field 'quantity'
+        unrounded = b.quantity * ratio
         accepted_buy_rounded[b.orderID] = int(round(unrounded + 1e-9))
 
     buys_by_product = defaultdict(list)
