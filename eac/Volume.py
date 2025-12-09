@@ -13,7 +13,7 @@ class VolumeMILP:
         self.pricing = pricing or PricingLP(self.backend)
         self.max_retries = max_retries
 
-    def build_problem(self, products, buy_orders, sell_orders, baskets, unit_capacity_registry=None, substitutability_families_buy=None, allow_overholding_hook=None):
+    def build_problem(self, products, buy_orders, sell_orders, baskets, unit_capacity_registry=None, substitutability_families_buy=None, allow_overholding_hook=None, global_loop_families=None):
         substitutability_families_buy = substitutability_families_buy or {}
         unit_capacity_registry = unit_capacity_registry or {}
         problems = validate_unit_capacity(sell_orders, unit_capacity_registry)
@@ -25,11 +25,10 @@ class VolumeMILP:
             for p, vol in allow_overholding_hook.items():
                 if vol > 0:
                     oid = f"OVERHOLD_{p}"
-                    buy_orders_extended.append({"orderID": oid, "auctionProduct": p, "price": 0.0, "quanity": vol, "paradoxical": True})
+                    buy_orders_extended.append({"orderID": oid, "auctionProduct": p, "price": 0.0, "quantity": vol, "paradoxical": True})
 
         prob = pulp.LpProblem("EAC_Volume", pulp.LpMaximize)
 
-        # x_b
         x_b = {}
         for b in buy_orders_extended:
             low = float(b.get("min_acceptance_ratio", 0.0))
@@ -37,7 +36,6 @@ class VolumeMILP:
             bid = b.get("orderID", b.get("id", ""))
             x_b[bid] = pulp.LpVariable(f"x_b_{bid}", lowBound=low, upBound=1, cat="Continuous")
 
-        # x_s
         x_s = {}
         for s in sell_orders:
             if s.orderType == "parent":
@@ -83,9 +81,7 @@ class VolumeMILP:
         concomitant_groups = {}
         for b in baskets:
             if len(b.concomitant) > 0:
-                # Convert b.id to int for consistent grouping
                 basket_id_key = b.id
-                # Group key: sorted list of basket IDs (all as ints)
                 group_members = sorted([basket_id_key] + b.concomitant)
                 group_key = tuple(group_members)
                 if group_key not in concomitant_groups:
@@ -111,7 +107,7 @@ class VolumeMILP:
             buy_sum = []
             for s in sell_orders:
                 if s.auctionProduct == p:
-                    sell_sum.append(s.qty * x_s[s.orderID])
+                    sell_sum.append(s.quantity * x_s[s.orderID])
             for b in buy_orders_extended:
                 if b.get("auctionProduct") == p:
                     bid = b.get("orderID")
@@ -121,6 +117,17 @@ class VolumeMILP:
 
         for fam_id, members in (substitutability_families_buy or {}).items():
             prob += pulp.lpSum([x_b[bid] for bid in members]) <= 1.0, f"buy_subs_family_{fam_id}"
+
+        # Cross-window loop constraints: baskets in same loop family must have same acceptance
+        if global_loop_families:
+            for (loop_id, auction_id), basket_ids in global_loop_families.items():
+                if len(basket_ids) > 1:
+                    # All baskets in this loop must have same y_parent value
+                    base_id = basket_ids[0]
+                    # Only enforce constraint if both baskets have variables in this window
+                    for other_id in basket_ids[1:]:
+                        if base_id in y_parent and other_id in y_parent:
+                            prob += y_parent[base_id] == y_parent[other_id], f"cross_window_loop_{base_id}_{other_id}"
 
         # Bounds
         for bid in x_b:
@@ -142,10 +149,10 @@ class VolumeMILP:
         prob += pulp.lpSum(welfare_terms), "Welfare"
         return prob, x_b, x_s, y_parent, buy_orders_extended
 
-    def solve_with_pricing_loop(self, products, buy_orders, sell_orders, baskets, unit_capacity_registry=None, substitutability_families_buy=None, allow_overholding_hook=None, msg: int = 0):
+    def solve_with_pricing_loop(self, products, buy_orders, sell_orders, baskets, unit_capacity_registry=None, substitutability_families_buy=None, allow_overholding_hook=None, global_loop_families=None, msg: int = 0):
         
         prob, x_b, x_s, y_parent, buy_orders_extended = self.build_problem(
-            products, buy_orders, sell_orders, baskets, unit_capacity_registry, substitutability_families_buy, allow_overholding_hook
+            products, buy_orders, sell_orders, baskets, unit_capacity_registry, substitutability_families_buy, allow_overholding_hook, global_loop_families
         )
         nogood_counter = 0
         seen_parent_patterns = set()
@@ -184,7 +191,7 @@ class VolumeMILP:
 
             seen_parent_patterns.add(accepted_parents)
             prices_unrounded_candidate, price_problem_candidate, price_status_candidate = self.pricing.solve(
-                products, sell_orders, x_s_val, baskets
+                products, sell_orders, x_s_val, baskets, global_loop_families
             )
             price_problem = price_problem_candidate
             prices_unrounded = prices_unrounded_candidate
@@ -208,7 +215,7 @@ class VolumeMILP:
                 product = b.get("auctionProduct", b.get("product", ""))
                 clearing_price = prices_unrounded.get(product, 0.0)
                 surplus_per_mw = b["price"] - clearing_price
-                total_surplus = surplus_per_mw * b.get("quanity", b.get("volume", 0)) * ratio
+                total_surplus = surplus_per_mw * b.get("quantity", b.get("volume", 0)) * ratio
                 if total_surplus < -1e-9 and not bool(b.get("paradoxical", True)):
                     buy_problematic = True
                     violating_buys.append((bid, total_surplus))

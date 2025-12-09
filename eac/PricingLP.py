@@ -22,7 +22,7 @@ class PricingLP:
         self.price_max = price_max
 
     def solve(self, products: List[str], sell_orders: List, x_s_val: Dict[str, float],
-              baskets: List) -> Tuple[Dict[str, float], pulp.LpProblem, str]:
+              baskets: List, global_loop_families: Dict = None) -> Tuple[Dict[str, float], pulp.LpProblem, str]:
         
         price_prob = pulp.LpProblem("EAC_Pricing", pulp.LpMinimize)
         p_vars = {p: pulp.LpVariable(f"price_{p}", lowBound=self.price_min,
@@ -35,7 +35,7 @@ class PricingLP:
             x_fixed = float(x_s_val.get(s_id, 0.0))
             if x_fixed > 1e-12:
                 if s.auctionProduct in p_vars:
-                    q = s.qty
+                    q = s.quantity
                     if abs(q) > 1e-12:
                         procurement_terms.append(p_vars[s.auctionProduct] * q * x_fixed)
 
@@ -55,8 +55,8 @@ class PricingLP:
                 continue
             if s.auctionProduct not in p_vars:
                 continue
-            revenue = p_vars[s.auctionProduct] * s.qty * x_fixed
-            required = s_price * s.qty * x_fixed
+            revenue = p_vars[s.auctionProduct] * s.quantity * x_fixed
+            required = s_price * s.quantity * x_fixed
             price_prob += revenue >= required, f"sell_nonneg_{s_id}"
 
         sells_by_basket = defaultdict(list)
@@ -86,8 +86,8 @@ class PricingLP:
                     continue
                 if s.auctionProduct not in p_vars:
                     continue
-                revenue = p_vars[s.auctionProduct] * s.qty * x_fixed
-                cost = s_price * s.qty * x_fixed
+                revenue = p_vars[s.auctionProduct] * s.quantity * x_fixed
+                cost = s_price * s.quantity * x_fixed
                 net_terms.append(revenue - cost)
             if net_terms:
                 price_prob += pulp.lpSum(net_terms) >= 0.0, f"basket_net_{basket_id}"
@@ -106,8 +106,8 @@ class PricingLP:
                     continue
                 if s.auctionProduct not in p_vars:
                     continue
-                revenue = p_vars[s.auctionProduct] * s.qty * x_fixed
-                cost = s_price * s.qty * x_fixed
+                revenue = p_vars[s.auctionProduct] * s.quantity * x_fixed
+                cost = s_price * s.quantity * x_fixed
                 net_terms.append(revenue - cost)
             if net_terms:
                 loop_label = '_'.join(sorted([str(bid) for bid in basket_ids]))
