@@ -21,8 +21,8 @@ class PricingLP:
         self.price_min = price_min
         self.price_max = price_max
 
-    def solve(self, products: List[str], sell_orders: List[dict], x_s_val: Dict[str, float],
-              baskets: Dict[str, dict]) -> Tuple[Dict[str, float], pulp.LpProblem, str]:
+    def solve(self, products: List[str], sell_orders: List, x_s_val: Dict[str, float],
+              baskets: List) -> Tuple[Dict[str, float], pulp.LpProblem, str]:
         
         price_prob = pulp.LpProblem("EAC_Pricing", pulp.LpMinimize)
         p_vars = {p: pulp.LpVariable(f"price_{p}", lowBound=self.price_min,
@@ -31,12 +31,13 @@ class PricingLP:
         # Objective: Minimize procurement cost
         procurement_terms = []
         for s in sell_orders:
-            x_fixed = float(x_s_val.get(s.id, 0.0))
+            s_id = s.orderID
+            x_fixed = float(x_s_val.get(s_id, 0.0))
             if x_fixed > 1e-12:
-                for p in products:
-                    q = s.qty.get(p, 0.0)
+                if s.auctionProduct in p_vars:
+                    q = s.qty
                     if abs(q) > 1e-12:
-                        procurement_terms.append(p_vars[p] * q * x_fixed)
+                        procurement_terms.append(p_vars[s.auctionProduct] * q * x_fixed)
 
         if procurement_terms:
             price_prob += pulp.lpSum(procurement_terms), "ProcurementCost" 
@@ -45,53 +46,72 @@ class PricingLP:
 
         # Constraints: Non-negative profit for sell orders         
         for s in sell_orders:
-            x_fixed = float(x_s_val.get(s.id, 0.0) or 0.0)
+            s_id = s.orderID
+            s_price = s.price
+            x_fixed = float(x_s_val.get(s_id, 0.0) or 0.0)
             if x_fixed <= 1e-12:
                 continue
-            total_qty = sum(s.qty.get(p, 0.0) for p in products)
-            if total_qty <= 1e-12:
+            if s.quantity <= 1e-12:
                 continue
-            revenue = pulp.lpSum([p_vars[p] * s.qty.get(p, 0.0) * x_fixed for p in products])
-            required = s.price * total_qty * x_fixed
-            price_prob += revenue >= required, f"child_nonneg_{s.id}"
+            if s.auctionProduct not in p_vars:
+                continue
+            revenue = p_vars[s.auctionProduct] * s.qty * x_fixed
+            required = s_price * s.qty * x_fixed
+            price_prob += revenue >= required, f"sell_nonneg_{s_id}"
 
         sells_by_basket = defaultdict(list)
         for s in sell_orders:
-            sells_by_basket[s.basket].append(s)
+            sells_by_basket[s.basketID].append(s)
 
-        loop_families = build_loop_families(baskets)
-        baskets_in_loops = set().union(*loop_families) if loop_families else set()
+        # Build loop families - filter to baskets in this window (window being auctionID)
+        basket_ids_in_window = set(s.basketID for s in sell_orders)
+        baskets_in_window = [b for b in baskets if b.id in basket_ids_in_window]
+        loop_families = build_loop_families(baskets_in_window)
+        
+        # Get basket IDs that are in loops
+        baskets_in_loops = set()
+        for (loop_id, auction_id), basket_ids in loop_families.items():
+            baskets_in_loops.update(basket_ids)
 
-        # Constraints: Non-negative net profit for baskets and loops
+        # Constraints: Non-negative net profit for baskets NOT in loops
         for basket_id, sells in sells_by_basket.items():
             if basket_id in baskets_in_loops:
                 continue
             net_terms = []
             for s in sells:
-                x_fixed = float(x_s_val.get(s.id, 0.0) or 0.0)
+                s_id = s.orderID
+                s_price = s.price
+                x_fixed = float(x_s_val.get(s_id, 0.0) or 0.0)
                 if x_fixed <= 1e-12:
                     continue
-                revenue = pulp.lpSum([p_vars[p] * s.qty.get(p, 0.0) * x_fixed for p in products])
-                cost = s.price * sum(s.qty.get(p, 0.0) for p in products) * x_fixed
+                if s.auctionProduct not in p_vars:
+                    continue
+                revenue = p_vars[s.auctionProduct] * s.qty * x_fixed
+                cost = s_price * s.qty * x_fixed
                 net_terms.append(revenue - cost)
             if net_terms:
                 price_prob += pulp.lpSum(net_terms) >= 0.0, f"basket_net_{basket_id}"
 
         # Constraints: Non-negative net profit for loop families
-        for fam in loop_families:
+        for (loop_id, auction_id), basket_ids in loop_families.items():
             fam_orders = []
-            for b in fam:
-                fam_orders.extend(sells_by_basket.get(b, []))
+            for b_id in basket_ids:
+                fam_orders.extend(sells_by_basket.get(b_id, []))
             net_terms = []
             for s in fam_orders:
-                x_fixed = float(x_s_val.get(s.id, 0.0) or 0.0)
+                s_id = s.orderID
+                s_price = s.price
+                x_fixed = float(x_s_val.get(s_id, 0.0) or 0.0)
                 if x_fixed <= 1e-12:
                     continue
-                revenue = pulp.lpSum([p_vars[p] * s.qty.get(p, 0.0) * x_fixed for p in products])
-                cost = s.price * sum(s.qty.get(p, 0.0) for p in products) * x_fixed
+                if s.auctionProduct not in p_vars:
+                    continue
+                revenue = p_vars[s.auctionProduct] * s.qty * x_fixed
+                cost = s_price * s.qty * x_fixed
                 net_terms.append(revenue - cost)
             if net_terms:
-                price_prob += pulp.lpSum(net_terms) >= 0.0, f"loop_net_{'_'.join(sorted(fam))}"
+                loop_label = '_'.join(sorted([str(bid) for bid in basket_ids]))
+                price_prob += pulp.lpSum(net_terms) >= 0.0, f"loop_net_{loop_label}"
 
         # solve
         status = self.backend.solve(price_prob)
