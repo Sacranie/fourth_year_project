@@ -12,11 +12,17 @@ Basket represents a basket of Sell orders with possible concomitant relationship
 @dataclass(frozen=True)
 class SellOrder:
     auctionID: int
-    id: str
-    basket: str
-    qty: Mapping[str, float]
+    registeredAuctionParticipant: str
+    auctionUnit: str
+    basketID: int
+    service: str
+    deliveryStart: str
+    deliveryEnd: str
+    orderID: str
+    orderType: str  # 'parent' | 'child' | 'substitutable_child'
+    auctionProduct: str
+    qty: float
     price: float
-    type: str # 'parent' | 'child' | 'substitutable_child'
     min_acceptance_ratio: float = 0.0
 
 
@@ -24,11 +30,17 @@ class SellOrder:
     def from_dict(d: Dict) -> "SellOrder":
         return SellOrder(
             auctionID=int(d.get("auctionID", 0)),
-            id=d["id"],
-            basket=d["basket"],
-            qty=d.get("qty", {}),
+            registeredAuctionParticipant=d.get("registeredAuctionParticipant", ""),
+            auctionUnit=d.get("auctionUnit", ""),
+            basketID=int(d.get("basketID", 0)),
+            service=d.get("service", ""),
+            deliveryStart=d.get("deliveryStart", ""),
+            deliveryEnd=d.get("deliveryEnd", ""),
+            orderID=d.get("orderID", ""),
+            orderType=d.get("orderType", ""),
+            auctionProduct=d.get("auctionProduct", ""),
+            qty=float(d.get("qty", 0.0)),
             price=float(d.get("price", 0.0)),
-            type=d.get("type", "parent"),
             min_acceptance_ratio=float(d.get("min_acceptance_ratio", 0.0)),
         )
 
@@ -36,24 +48,27 @@ class SellOrder:
 @dataclass(frozen=True)
 class BuyOrder:
     auctionID: int
-    id: str
-    product: str
+    orderID: str
+    service: str
+    auctionProduct: str
+    deliveryStart: str
+    deliveryEnd: str
+    quanity: float
     price: float
-    volume: float
-    family: Optional[str] = None
     paradoxical: bool = True
     min_acceptance_ratio: float = 0.0
-
 
     @staticmethod
     def from_dict(d: Dict) -> "BuyOrder":
         return BuyOrder(
             auctionID=int(d.get("auctionID", 0)),
-            id=d["id"],
-            product=d["product"],
+            orderID=d.get("orderID", ""),
+            service=d.get("service", ""),
+            auctionProduct=d.get("auctionProduct", ""),
+            deliveryStart=d.get("deliveryStart", ""),
+            deliveryEnd=d.get("deliveryEnd", ""),
+            quanity=float(d.get("quanity", 0.0)),
             price=float(d.get("price", 0.0)),
-            volume=float(d.get("volume", 0.0)),
-            family=d.get("family"),
             paradoxical=bool(d.get("paradoxical", True)),
             min_acceptance_ratio=float(d.get("min_acceptance_ratio", 0.0)),
         )
