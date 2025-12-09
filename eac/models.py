@@ -79,8 +79,8 @@ class Basket:
     id: int
     auctionID: int
     unit: str
-    concomitant: List[str]
-    looped_to: Optional[str]
+    concomitant: List[int]
+    looped_to: Optional[int]
 
 
     @staticmethod
