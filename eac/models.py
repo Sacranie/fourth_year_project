@@ -11,6 +11,7 @@ Basket represents a basket of Sell orders with possible concomitant relationship
 
 @dataclass(frozen=True)
 class SellOrder:
+    auctionID: int
     id: str
     basket: str
     qty: Mapping[str, float]
@@ -22,6 +23,7 @@ class SellOrder:
     @staticmethod
     def from_dict(d: Dict) -> "SellOrder":
         return SellOrder(
+            auctionID=int(d.get("auctionID", 0)),
             id=d["id"],
             basket=d["basket"],
             qty=d.get("qty", {}),
@@ -33,6 +35,7 @@ class SellOrder:
 
 @dataclass(frozen=True)
 class BuyOrder:
+    auctionID: int
     id: str
     product: str
     price: float
@@ -45,6 +48,7 @@ class BuyOrder:
     @staticmethod
     def from_dict(d: Dict) -> "BuyOrder":
         return BuyOrder(
+            auctionID=int(d.get("auctionID", 0)),
             id=d["id"],
             product=d["product"],
             price=float(d.get("price", 0.0)),
@@ -64,5 +68,10 @@ class Basket:
 
 
     @staticmethod
-    def from_dict(bid: str, d: Dict) -> "Basket":
-        return Basket(id=bid, unit=d.get("unit"), concomitant=list(d.get("concomitant", [])), looped_to=d.get("looped_to"))
+    def from_dict(d: Dict) -> "Basket":
+        return Basket(
+            id=d.get("id"), 
+            unit=d.get("unit"), 
+            concomitant=list(d.get("concomitant", [])), 
+            looped_to=d.get("looped_to")
+        )
