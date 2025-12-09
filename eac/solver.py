@@ -4,6 +4,7 @@ import pulp
 """
 A simple solver backend using PuLP.
 This class provides an interface to solve linear programming problems using the PuLP library.
+This is done using the CBC solver. Coin Branch or cut solver.
 """
 
 class PulpSolverBackend:
