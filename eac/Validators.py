@@ -41,7 +41,7 @@ def validate_unit_capacity(
         child_total = 0.0
         max_sub = 0.0
         for s in sells:
-            qty = s.qty
+            qty = s.quantity
             if s.orderType == "parent":
                 parent_total += qty
             elif s.orderType == "child":

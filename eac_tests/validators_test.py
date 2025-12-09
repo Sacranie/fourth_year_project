@@ -7,13 +7,13 @@ def test_validate_capacity_ok():
     sells = [
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S1", orderType="parent", auctionProduct="PROD1", qty=30, price=10.0),
+                  orderID="S1", orderType="parent", auctionProduct="PROD1", quantity=30, price=10.0),
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S2", orderType="child", auctionProduct="PROD1", qty=20, price=5.0),
+                  orderID="S2", orderType="child", auctionProduct="PROD1", quantity=20, price=5.0),
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S3", orderType="substitutable_child", auctionProduct="PROD1", qty=10, price=3.0),
+                  orderID="S3", orderType="substitutable_child", auctionProduct="PROD1", quantity=10, price=3.0),
     ]
     registry = {"U1": 100.0}
     problems = validate_unit_capacity(sells, registry)
@@ -25,13 +25,13 @@ def test_validate_capacity_violation_parent_child_substitutable():
     sells = [
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S1", orderType="parent", auctionProduct="PROD1", qty=46, price=10.0),
+                  orderID="S1", orderType="parent", auctionProduct="PROD1", quantity=46, price=10.0),
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S2", orderType="child", auctionProduct="PROD1", qty=30, price=5.0),
+                  orderID="S2", orderType="child", auctionProduct="PROD1", quantity=30, price=5.0),
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S3", orderType="substitutable_child", auctionProduct="PROD1", qty=25, price=3.0),
+                  orderID="S3", orderType="substitutable_child", auctionProduct="PROD1", quantity=25, price=3.0),
     ]
     registry = {"U1": 100.0}
     problems = validate_unit_capacity(sells, registry)
@@ -43,7 +43,7 @@ def test_validate_missing_capacity():
     sells = [
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S1", orderType="parent", auctionProduct="PROD1", qty=10, price=10.0),
+                  orderID="S1", orderType="parent", auctionProduct="PROD1", quantity=10, price=10.0),
     ]
     registry = {}  # missing capacity for U1
     problems = validate_unit_capacity(sells, registry)
@@ -55,16 +55,16 @@ def test_substitutable_children_counted_only_max():
     sells = [
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S1", orderType="parent", auctionProduct="PROD1", qty=40, price=10.0),
+                  orderID="S1", orderType="parent", auctionProduct="PROD1", quantity=40, price=10.0),
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S2", orderType="child", auctionProduct="PROD1", qty=20, price=5.0),
+                  orderID="S2", orderType="child", auctionProduct="PROD1", quantity=20, price=5.0),
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S3", orderType="substitutable_child", auctionProduct="PROD1", qty=25, price=3.0),
+                  orderID="S3", orderType="substitutable_child", auctionProduct="PROD1", quantity=25, price=3.0),
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S4", orderType="substitutable_child", auctionProduct="PROD1", qty=30, price=4.0),
+                  orderID="S4", orderType="substitutable_child", auctionProduct="PROD1", quantity=30, price=4.0),
     ]
     registry = {"U1": 90.0}
     problems = validate_unit_capacity(sells, registry)
@@ -75,7 +75,7 @@ def test_zero_and_negative_capacity_behaviour():
     """Test that zero and negative capacity flags violations."""
     sells = [SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                        service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                       orderID="S1", orderType="parent", auctionProduct="PROD1", qty=1, price=10.0)]
+                       orderID="S1", orderType="parent", auctionProduct="PROD1", quantity=1, price=10.0)]
     problems = validate_unit_capacity(sells, {"U1": 0.0})
     assert any("violates capacity" in p for p in problems)
 
@@ -96,11 +96,11 @@ def test_multiple_time_windows_same_unit():
         # Window 1: 2025-01-01 to 2025-01-31
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S1", orderType="parent", auctionProduct="PROD1", qty=50, price=10.0),
+                  orderID="S1", orderType="parent", auctionProduct="PROD1", quantity=50, price=10.0),
         # Window 2: 2025-02-01 to 2025-02-28
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=2, 
                   service="S1", deliveryStart="2025-02-01", deliveryEnd="2025-02-28", 
-                  orderID="S2", orderType="parent", auctionProduct="PROD1", qty=60, price=10.0),
+                  orderID="S2", orderType="parent", auctionProduct="PROD1", quantity=60, price=10.0),
     ]
     registry = {"U1": 100.0}
     problems = validate_unit_capacity(sells, registry)
@@ -112,10 +112,10 @@ def test_different_units_independent():
     sells = [
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U1", basketID=1, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S1", orderType="parent", auctionProduct="PROD1", qty=80, price=10.0),
+                  orderID="S1", orderType="parent", auctionProduct="PROD1", quantity=80, price=10.0),
         SellOrder(auctionID=1, registeredAuctionParticipant="P1", auctionUnit="U2", basketID=2, 
                   service="S1", deliveryStart="2025-01-01", deliveryEnd="2025-01-31", 
-                  orderID="S2", orderType="parent", auctionProduct="PROD1", qty=150, price=10.0),
+                  orderID="S2", orderType="parent", auctionProduct="PROD1", quantity=150, price=10.0),
     ]
     registry = {"U1": 100.0, "U2": 100.0}
     problems = validate_unit_capacity(sells, registry)
