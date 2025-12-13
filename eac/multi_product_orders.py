@@ -52,4 +52,3 @@ def create_multi_product_order(base_key: Tuple,
         canonical_order_id=canonical_fragment_id,
     )
 
-

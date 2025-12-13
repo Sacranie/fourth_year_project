@@ -9,6 +9,8 @@ BuyOrder represents a buy order for a specific product.
 Basket represents a basket of Sell orders with possible concomitant relationships.
 """
 
+ACCEPTANCE_EPS = 1e-6
+
 @dataclass(frozen=True)
 class SellOrder:
     auctionID: int
@@ -110,3 +112,8 @@ class MultiProductOrder:
     order_type: str
     window: Tuple[str, str]
     canonical_order_id: int
+
+    # we should have an is accepted here
+    @property
+    def is_accepted(self) -> bool:
+        return self.acceptance > ACCEPTANCE_EPS
