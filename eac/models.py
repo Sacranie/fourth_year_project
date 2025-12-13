@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Mapping, Optional, List, Dict
+from typing import Mapping, Optional, List, Dict, Tuple
 
 """
 These are the different model entities used in EAC.
@@ -23,6 +23,9 @@ class SellOrder:
     auctionProduct: str
     quantity: float
     price: float
+    orderEntryTime: str = ""
+    product_id: str = ""
+    status: str = ""
     min_acceptance_ratio: float = 0.0
 
 
@@ -41,6 +44,9 @@ class SellOrder:
             auctionProduct=d.get("auctionProduct", ""),
             quantity=float(d.get("quantity", 0.0)),
             price=float(d.get("price", 0.0)),
+            orderEntryTime=d.get("orderEntryTime", ""),
+            product_id=str(d.get("productID", "")),
+            status=str(d.get("status", "")),
             min_acceptance_ratio=float(d.get("min_acceptance_ratio", 0.0)),
         )
 
@@ -92,3 +98,15 @@ class Basket:
             concomitant=list(d.get("concomitant", [])), 
             looped_to=d.get("looped_to")
         )
+
+
+@dataclass(frozen=True)
+class MultiProductOrder:
+    key: Tuple
+    fragments: List[SellOrder]
+    acceptance: float
+    price_limit: float
+    basket_id: int
+    order_type: str
+    window: Tuple[str, str]
+    canonical_order_id: int
