@@ -128,7 +128,7 @@ class GlobalPricingLP:
         else:
             price_prob += 0.0, "MinimizeProcurementCost"
 
-        # CONSTRAINT 1: Child order surplus >= 0
+        # CONSTRAINT 1: Child order surplus >= 0.
         for order in multi_orders:
             if order.order_type == 'child' and order.is_accepted:
                 order_terms, order_constant = _accumulate_order_terms(order, p_vars)
