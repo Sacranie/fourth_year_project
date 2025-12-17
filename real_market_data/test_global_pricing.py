@@ -234,7 +234,7 @@ def run_global_pricing_test(data: Dict):
 
 
 if __name__ == "__main__":
-    AUCTION_ID = 1112
+    AUCTION_ID = 1116
     TEST_LIMIT = 1000000
 
     print(f"\n{'='*100}")

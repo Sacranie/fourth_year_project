@@ -1,4 +1,4 @@
-from eac.PricingLP import PricingLP
+from eac.PricingLP import GlobalPricingLP
 from eac.Volume import VolumeMILP
 from eac.solver import PulpSolverBackend
 from eac.rounding import rounding_and_residual_distribution
@@ -68,9 +68,9 @@ def run_market(products, buy_orders, sell_orders, baskets,
     
     # Solve for each time window
     window_results = {}
-    aggregated_x_s = {}  # Order ID -> acceptance ratio
-    aggregated_x_b = {}  # Order ID -> acceptance ratio
-    aggregated_prices = {}  # Product -> price (may vary by window)
+    all_x_s = {}  # All order ID -> acceptance ratio (collected from all windows)
+    all_x_b = {}  # All order ID -> acceptance ratio (collected from all windows)
+    window_prices = {}  # window -> (Product -> price) - prices are window-specific
     all_final = True
     
     for window in windows:
@@ -83,7 +83,7 @@ def run_market(products, buy_orders, sell_orders, baskets,
         baskets_window = _get_baskets_for_window(baskets, sell_orders_window)
         
         backend = PulpSolverBackend(msg=msg)
-        pricing = PricingLP(backend)
+        pricing = GlobalPricingLP(backend)
         volume = VolumeMILP(pricing, backend)
         
         res = volume.solve_with_pricing_loop(
@@ -97,26 +97,35 @@ def run_market(products, buy_orders, sell_orders, baskets,
         window_results[window] = res
         all_final = all_final and res.get("final", False)
         
-        # Aggregate results
-        aggregated_x_s.update(res.get("x_s", {}))
-        aggregated_x_b.update(res.get("x_b", {}))
+        # Collect results from this window
+        all_x_s.update(res.get("x_s", {}))
+        all_x_b.update(res.get("x_b", {}))
+        # Store prices keyed by time window - prices do NOT carry across windows
         if res.get("prices_unrounded"):
-            aggregated_prices.update(res["prices_unrounded"])
+            window_prices[window] = res["prices_unrounded"]
     
-    # Post-processing: rounding and residual distribution (aggregate level)
+    # Post-processing: rounding and residual distribution (per window)
     final_result = {
         "window_results": window_results,
-        "x_s": aggregated_x_s,
-        "x_b": aggregated_x_b,
-        "prices_unrounded": aggregated_prices,
+        "x_s": all_x_s,
+        "x_b": all_x_b,
+        "prices_unrounded": window_prices,
         "final": all_final,
     }
     
-    if all_final and aggregated_prices:
-        prices_rounded, sell_round, buy_round = rounding_and_residual_distribution(
-            products, aggregated_prices, aggregated_x_s,
-            sell_orders, aggregated_x_b, buy_orders
-        )
+    if all_final and window_prices:
+        # Apply rounding and residual distribution per window
+        prices_rounded = {}
+        sell_round = {}
+        buy_round = {}
+        for window, prices in window_prices.items():
+            p_r, s_r, b_r = rounding_and_residual_distribution(
+                products, prices, all_x_s,
+                sell_orders, all_x_b, buy_orders
+            )
+            prices_rounded[window] = p_r
+            sell_round[window] = s_r
+            buy_round[window] = b_r
         final_result["prices_rounded"] = prices_rounded
         final_result["sell_round"] = sell_round
         final_result["buy_round"] = buy_round

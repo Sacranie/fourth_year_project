@@ -12,14 +12,10 @@ from eac.multi_product_orders import group_multi_product_orders
 Implements the pricing linear program for the EAC market clearing process.
 """
 
-getcontext().prec = 28
-
-logger = logging.getLogger(__name__)
-
 ACCEPTANCE_EPS = 1e-9
 COEFF_TOL = 1e-12
 ROUNDING_TOL_DECIMAL = Decimal("0.000001")
-PRICE_MIN = -50.0
+PRICE_MIN = -10.0
 PRICE_MAX = 50.0
 
 
@@ -45,10 +41,10 @@ def _accumulate_order_terms(order: MultiProductOrder,
         window = (fragment.deliveryStart, fragment.deliveryEnd)
         coeff = fragment.quantity * order.acceptance
         if abs(coeff) > COEFF_TOL:
-            var = price_variables.get((fragment.auctionProduct, window))
-            if var is None:
+            computed_MCP = price_variables.get((fragment.auctionProduct, window))
+            if computed_MCP is None:
                 raise KeyError(f"Missing price variable for active pair {(fragment.auctionProduct, window)}")
-            terms.append(var * coeff)
+            terms.append(computed_MCP * coeff)
             constant -= order.price_limit * coeff
 
     return terms, constant
@@ -96,23 +92,13 @@ class GlobalPricingLP:
              ) -> Tuple[Dict[Tuple[str, Tuple], float], pulp.LpProblem, str]:
         basket_to_loop = basket_to_loop or {}
 
-        # Normalize basket_to_loop keys
-        normalized_loop_map: Dict[int, Optional[int]] = {}
         for basket_id, loop_group_id in basket_to_loop.items():
-            try:
-                normalized_basket = int(basket_id)
-            except (TypeError, ValueError):
-                normalized_basket = basket_id
+            normalized_basket = int(basket_id)
 
             if loop_group_id is None:
-                normalized_loop_map[normalized_basket] = None
+                basket_to_loop[normalized_basket] = None
             else:
-                try:
-                    normalized_loop_map[normalized_basket] = int(loop_group_id)
-                except (TypeError, ValueError):
-                    normalized_loop_map[normalized_basket] = loop_group_id
-
-        basket_to_loop = normalized_loop_map
+                basket_to_loop[normalized_basket] = int(loop_group_id)
 
         multi_orders = group_multi_product_orders(all_sell_orders, x_s_val)
         active_product_windows = _collect_active_pairs(multi_orders)
@@ -194,17 +180,8 @@ class GlobalPricingLP:
                 loop_expr = pulp.lpSum(loop_terms) + loop_constant
                 price_prob += loop_expr >= 0.0, f"loop_family_{loop_id}"
 
-        # Solve the LP
-        logger.info("Solving pricing LP: minimize procurement cost subject to surplus constraints...")
         status = self.backend.solve(price_prob)
         status_str = pulp.LpStatus[status]
-        
-        if status != pulp.LpStatusOptimal:
-            logger.warning(f"Pricing LP failed with status: {status_str}")
-        else:
-            obj_value = pulp.value(price_prob.objective)
-            logger.info(f"Pricing LP solved: Procurement cost = {obj_value:.6f}")
-
         # Extract and round prices
         prices_val: Dict[Tuple[str, Tuple[str, str]], float] = {}
         for key, var in p_vars.items():

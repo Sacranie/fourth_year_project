@@ -2,15 +2,15 @@ from typing import List, Dict, Optional
 from collections import defaultdict
 import pulp
 from eac.Validators import build_loop_families, validate_unit_capacity
-from eac.PricingLP import PricingLP
+from eac.PricingLP import GlobalPricingLP
 from eac.solver import PulpSolverBackend
 
 MAX_MILP_RETRIES = 50
 
 class VolumeMILP:
-    def __init__(self, pricing: Optional[PricingLP] = None, backend: Optional[PulpSolverBackend] = None, max_retries: int = MAX_MILP_RETRIES):
+    def __init__(self, pricing: Optional[GlobalPricingLP] = None, backend: Optional[PulpSolverBackend] = None, max_retries: int = MAX_MILP_RETRIES):
         self.backend = backend or PulpSolverBackend()
-        self.pricing = pricing or PricingLP(self.backend)
+        self.pricing = pricing or GlobalPricingLP(self.backend)
         self.max_retries = max_retries
 
     def build_problem(self, products, buy_orders, sell_orders, baskets, unit_capacity_registry=None, substitutability_families_buy=None, allow_overholding_hook=None, global_loop_families=None):
@@ -37,13 +37,20 @@ class VolumeMILP:
             x_b[bid] = pulp.LpVariable(f"x_b_{bid}", lowBound=low, upBound=1, cat="Continuous")
 
         x_s = {}
+        x_s_accept = {}
         for s in sell_orders:
             if s.orderType == "parent":
                 x_s[s.orderID] = pulp.LpVariable(f"x_s_{s.orderID}", lowBound=0, upBound=1, cat="Binary")
             else:
                 low = float(s.min_acceptance_ratio)
                 low = max(0.0, min(1.0, low))
-                x_s[s.orderID] = pulp.LpVariable(f"x_s_{s.orderID}", lowBound=low, upBound=1, cat="Continuous")
+                x_var = pulp.LpVariable(f"x_s_{s.orderID}", lowBound=0.0, upBound=1, cat="Continuous")
+                x_s[s.orderID] = x_var
+                if low > 0.0:
+                    z_var = pulp.LpVariable(f"z_s_{s.orderID}", lowBound=0, upBound=1, cat="Binary")
+                    x_s_accept[s.orderID] = z_var
+                    prob += x_var <= z_var, f"min_accept_cap_{s.orderID}"
+                    prob += x_var >= low * z_var, f"min_accept_floor_{s.orderID}"
 
         y_parent = {}
         all_basket_ids = set(s.basketID for s in sell_orders)
@@ -189,7 +196,7 @@ class VolumeMILP:
 
             seen_parent_patterns.add(accepted_parents)
             prices_unrounded_candidate, price_problem_candidate, price_status_candidate = self.pricing.solve(
-                products, sell_orders, x_s_val, baskets
+                products, sell_orders, x_s_val, baskets, buy_orders, x_b_val
             )
             price_problem = price_problem_candidate
             prices_unrounded = prices_unrounded_candidate

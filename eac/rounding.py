@@ -35,7 +35,9 @@ def rounding_and_residual_distribution(products, mcp_prices_val_unrounded, x_s_v
         if unrounded <= 0:
             accepted_sell_rounded[s.orderID] = 0
             continue
-        if s.orderType == "substitutable_child":
+        # Note: API returns 'SUBSTITUTABLECHILD' which may be lowercased to 'substitutablechild'
+        order_type = getattr(s, 'orderType', 'parent').lower()
+        if order_type in ("substitutable_child", "substitutablechild"):
             accepted_sell_rounded[s.orderID] = int(math.floor(unrounded + 1e-9))
         else:
             accepted_sell_rounded[s.orderID] = int(round(unrounded + 1e-9))
