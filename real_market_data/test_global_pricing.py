@@ -1,4 +1,5 @@
 from typing import Dict, List, Tuple, Set
+from collections import defaultdict
 from decimal import Decimal
 import json
 import urllib.request
@@ -46,7 +47,7 @@ def process_auction_data(sell_url: str, buy_url: str, auction_id: int, limit: in
     all_sell_orders: List[SellOrder] = []
     x_s_observed: Dict[int, float] = {}
     expected_prices: Dict[Tuple[str, Tuple[str, str]], float] = {}
-    basket_to_loop: Dict[int, int] = {}
+    basket_to_loop = defaultdict(list)
     products = set()
 
     rejected_orders = 0
@@ -64,10 +65,6 @@ def process_auction_data(sell_url: str, buy_url: str, auction_id: int, limit: in
         order_id = int(row.get("orderID", 0))
         acceptance_ratio = float(row.get("acceptanceRatio", 0.0) or 0.0)
 
-        # Build SellOrder
-        # Note: min_acceptance_ratio is a constraint on the order (if it exists in API)
-        # For the pricing LP, we're taking acceptances as given from the API,
-        # so this field doesn't affect our pricing calculation
         sell_order = SellOrder(
             auctionID=int(row.get("auctionID", 0)),
             registeredAuctionParticipant=str(row.get("registeredAuctionParticipant", "")),
@@ -104,7 +101,7 @@ def process_auction_data(sell_url: str, buy_url: str, auction_id: int, limit: in
         
         # FIXED: Convert to int and only add if not already present
         if looped_basket_id is not None and basket_id not in basket_to_loop:
-            basket_to_loop[basket_id] = int(looped_basket_id)
+            basket_to_loop[looped_basket_id].append(basket_id)
 
     if rejected_orders:
         print(f"Skipped {rejected_orders} rejected orders")

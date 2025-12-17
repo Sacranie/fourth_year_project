@@ -41,10 +41,10 @@ def _accumulate_order_terms(order: MultiProductOrder,
         window = (fragment.deliveryStart, fragment.deliveryEnd)
         coeff = fragment.quantity * order.acceptance
         if abs(coeff) > COEFF_TOL:
-            computed_MCP = price_variables.get((fragment.auctionProduct, window))
-            if computed_MCP is None:
+            computed_MCP_pence = price_variables.get((fragment.auctionProduct, window))
+            if computed_MCP_pence is None:
                 raise KeyError(f"Missing price variable for active pair {(fragment.auctionProduct, window)}")
-            terms.append(computed_MCP * coeff)
+            terms.append((computed_MCP_pence * coeff) / 100.0)
             constant -= order.price_limit * coeff
 
     return terms, constant
@@ -88,15 +88,7 @@ class GlobalPricingLP:
               x_s_val: Dict[int, float],
               basket_to_loop: Dict[int, int] = None,
              ) -> Tuple[Dict[Tuple[str, Tuple], float], pulp.LpProblem, str]:
-        basket_to_loop = basket_to_loop or {}
-
-        for basket_id, loop_group_id in basket_to_loop.items():
-            normalized_basket = int(basket_id)
-
-            if loop_group_id is None:
-                basket_to_loop[normalized_basket] = None
-            else:
-                basket_to_loop[normalized_basket] = int(loop_group_id)
+        basket_to_loop = basket_to_loop or defaultdict(list)
 
         multi_orders = group_multi_product_orders(all_sell_orders, x_s_val)
         active_product_windows = _collect_active_pairs(multi_orders)
@@ -104,19 +96,15 @@ class GlobalPricingLP:
         # Use global price bounds for all active product-window pairs (per NESO spec)
         price_prob = pulp.LpProblem("EAC_Global_Pricing", pulp.LpMinimize)
         p_vars: Dict[Tuple[str, Tuple[str, str]], pulp.LpVariable] = {}
+        cents_min = int(round(self.price_min * 100))
+        cents_max = int(round(self.price_max * 100))
         for product, window in sorted(active_product_windows):
             var_name = f"price_{product}_{window[0]}_{window[1]}".replace(":", "_").replace("-", "_")
-            lower, upper = (self.price_min, self.price_max)
             p_vars[(product, window)] = pulp.LpVariable(
-                var_name, lowBound=lower, upBound=upper, cat="Continuous"
+                var_name, lowBound=cents_min, upBound=cents_max, cat="Integer"
             )
 
-        loop_families: Dict[Optional[int], Set[int]] = defaultdict(set)
-        for basket_id, loop_group_id in basket_to_loop.items():
-            if loop_group_id is not None:
-                loop_families[loop_group_id].add(basket_id)
-
-        baskets_in_loops = set(b_id for basket_ids in loop_families.values() for b_id in basket_ids)
+        baskets_in_loops = set(b_id for _, basket_ids in basket_to_loop.items() for b_id in basket_ids)
 
         orders_by_basket: Dict[int, List[MultiProductOrder]] = defaultdict(list)
         for order in multi_orders:
@@ -130,9 +118,9 @@ class GlobalPricingLP:
                     window = (fragment.deliveryStart, fragment.deliveryEnd)
                     coeff = fragment.quantity * order.acceptance
                     if abs(coeff) > COEFF_TOL:
-                        var = p_vars.get((fragment.auctionProduct, window))
-                        if var is not None:
-                            procurement_terms.append(var * coeff)
+                        var_pence = p_vars.get((fragment.auctionProduct, window))
+                        if var_pence is not None:
+                            procurement_terms.append((var_pence * coeff) / 100.0)
         
         # Set objective: Minimize procurement cost
         if procurement_terms:
@@ -165,8 +153,8 @@ class GlobalPricingLP:
                     price_prob += basket_expr >= 0.0, f"basket_profit_{basket_id}"
 
         # CONSTRAINT 3: Loop family surplus >= 0
-        for loop_id, basket_ids in loop_families.items():
-            loop_orders: List[MultiProductOrder] = []
+        for loop_id, basket_ids in basket_to_loop.items():
+            loop_orders = []
             for basket_id in basket_ids:
                 loop_orders.extend(orders_by_basket.get(basket_id, []))
             loop_terms, loop_constant = _accumulate_orders_terms(loop_orders, p_vars)
@@ -182,58 +170,8 @@ class GlobalPricingLP:
         status_str = pulp.LpStatus[status]
         # Extract and round prices
         prices_val: Dict[Tuple[str, Tuple[str, str]], float] = {}
-        for key, var in p_vars.items():
-            raw_value = float(pulp.value(var) if pulp.value(var) is not None else 0.0)
-            prices_val[key] = float(Decimal(str(round_price_up_to_cent(raw_value))))
-
-        # Verify surpluses with rounded prices
-        self._verify_surpluses(multi_orders, prices_val, basket_to_loop)
+        for key, var_pence in p_vars.items():
+            raw_value = float(pulp.value(var_pence) if pulp.value(var_pence) is not None else 0.0)
+            prices_val[key] = float(Decimal(raw_value) / Decimal(100))
 
         return prices_val, price_prob, status_str
-
-    def _verify_surpluses(self,
-                          multi_orders: List[MultiProductOrder],
-                          prices_val: Dict[Tuple[str, Tuple[str, str]], float],
-                          basket_to_loop: Dict[int, Optional[int]]) -> None:
-        tol = ROUNDING_TOL_DECIMAL
-        basket_surplus: Dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
-        family_surplus: Dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
-
-        for order in multi_orders:
-            if order.is_accepted:
-                acceptance_dec = Decimal(str(order.acceptance))
-                price_limit_dec = Decimal(str(order.price_limit))
-                order_surplus = Decimal("0")
-
-                for fragment in order.fragments:
-                    window = (fragment.deliveryStart, fragment.deliveryEnd)
-                    price_key = (fragment.auctionProduct, window)
-                    if price_key not in prices_val:
-                        raise RuntimeError(f"Rounded price missing for active pair {price_key}")
-
-                    price_dec = Decimal(str(prices_val[price_key]))
-                    quantity_dec = Decimal(str(fragment.quantity))
-                    order_surplus += quantity_dec * acceptance_dec * (price_dec - price_limit_dec)
-
-                if order.order_type == 'child' and order_surplus < -tol:
-                    raise RuntimeError(
-                        f"Rounded prices violate surplus for child order {order.canonical_order_id}: {order_surplus}"
-                    )
-
-                basket_surplus[order.basket_id] += order_surplus
-
-                loop_id = basket_to_loop.get(order.basket_id)
-                if loop_id is not None:
-                    family_surplus[loop_id] += order_surplus
-
-        for basket_id, surplus in basket_surplus.items():
-            if basket_to_loop.get(basket_id) is None and surplus < -tol:
-                raise RuntimeError(
-                    f"Rounded prices violate surplus for basket {basket_id}: {surplus}"
-                )
-
-        for loop_id, surplus in family_surplus.items():
-            if surplus < -tol:
-                raise RuntimeError(
-                    f"Rounded prices violate surplus for loop family {loop_id}: {surplus}"
-                )
