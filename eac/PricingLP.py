@@ -86,7 +86,7 @@ class GlobalPricingLP:
     def solve(self, 
               all_sell_orders: List,
               x_s_val: Dict[int, float],
-              basket_to_loop: Dict[int, int] = None,
+              basket_to_loop: Dict[int, List[int]] = None,
              ) -> Tuple[Dict[Tuple[str, Tuple], float], pulp.LpProblem, str]:
         basket_to_loop = basket_to_loop or defaultdict(list)
 
