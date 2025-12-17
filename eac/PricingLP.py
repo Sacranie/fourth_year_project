@@ -168,7 +168,7 @@ class GlobalPricingLP:
 
         status = self.backend.solve(price_prob)
         status_str = pulp.LpStatus[status]
-        # Extract and round prices
+
         prices_val: Dict[Tuple[str, Tuple[str, str]], float] = {}
         for key, var_pence in p_vars.items():
             raw_value = float(pulp.value(var_pence) if pulp.value(var_pence) is not None else 0.0)
