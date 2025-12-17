@@ -219,10 +219,8 @@ def run_global_pricing_test(data: Dict):
 
     print("Solving Global Pricing LP...")
     computed_prices, problem, status = global_lp.solve(
-        products=data["products"],
         all_sell_orders=data["sell_orders"],
         x_s_val=data["x_s_observed"],
-        all_baskets=[],
         basket_to_loop=data["basket_to_loop"],
     )
     

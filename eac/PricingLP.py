@@ -52,7 +52,7 @@ def _accumulate_order_terms(order: MultiProductOrder,
 
 def _accumulate_orders_terms(orders: Iterable[MultiProductOrder],
                              price_variables: Dict[Tuple[str, Tuple[str, str]], pulp.LpVariable]) -> Tuple[List, float]:
-    agg_terms: List = []
+    agg_terms = []
     agg_constant = 0.0
 
     for order in orders:
@@ -84,10 +84,8 @@ class GlobalPricingLP:
         self.price_max = price_max
 
     def solve(self, 
-              products: List[str],
               all_sell_orders: List,
               x_s_val: Dict[int, float],
-              all_baskets: List,
               basket_to_loop: Dict[int, int] = None,
              ) -> Tuple[Dict[Tuple[str, Tuple], float], pulp.LpProblem, str]:
         basket_to_loop = basket_to_loop or {}
