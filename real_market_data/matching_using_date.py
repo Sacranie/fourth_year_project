@@ -10,9 +10,7 @@ from eac.models import SellOrder, BuyOrder, Basket
 from eac.multi_product_orders import group_multi_product_orders
 from eac.Volume import VolumeMILP
 from eac.solver import PulpSolverBackend
-
-# Set decimal precision
-getcontext().prec = 28
+from eac.Validators import validate_unit_capacity, build_loop_families
 
 # NESO API endpoints
 SELL_URL = "https://api.neso.energy/api/3/action/datastore_search?resource_id=13b511df-d6ec-4143-afb1-0ecc6fd19810"
@@ -21,9 +19,6 @@ BUY_URL = "https://api.neso.energy/api/3/action/datastore_search?resource_id=1cf
 ACCEPTANCE_TOLERANCE = 0.01  # Compare within 1%
 
 
-# --------------------------------
-# Load & preprocess API data
-# --------------------------------
 def load_orders_for_auction(base_url: str, auction_id: int, limit: int) -> List[Dict]:
     """Load all orders for a specific Auction ID using the NESO datastore_search API."""
     filters = {"auctionID": auction_id}
@@ -95,8 +90,10 @@ def process_sell_orders(sell_records: List[Dict]) -> Tuple[List[SellOrder], Dict
     print(f"  - REJECTED: {rejected_count}")
     print(f"  - Total: {len(all_sell_orders)}")
     multi_orders = group_multi_product_orders(all_sell_orders)
+
     # We need to now iterate through the multi_orders and adjust the acceptance ratios
     # If they were rejected we should se to 1 and if they were executed or partially executed we should set to 1
+    
     for orders in multi_orders:
         if not orders.is_accepted:
             orders.acceptance = 1.0
@@ -116,9 +113,8 @@ def process_buy_orders(buy_records: List[Dict], auction_id: Optional[int] = None
         status = str(row.get("status", "")).strip().upper()
         order_id = row.get("orderID", 0)
 
-        # min_acceptance: we keep this as a lower bound; force-reject is handled in the model (use .force_reject if needed)
         if status == "REJECTED":
-            min_acceptance = 1.0   # leave lower bound at 0; force-reject should be handled by variable upper bound or .force_reject flag
+            min_acceptance = 1.0 # force reject
         else:
             min_acceptance = row.get("acceptanceRatio", 0.0)
 
@@ -189,18 +185,13 @@ def compare_acceptance_ratios(computed: Dict, api: Dict, order_type: str = "Sell
     Compare computed acceptance ratios vs API acceptance ratios.
     Returns: (matches, total, differences_list)
     """
-    print(f"\n{'='*100}")
-    print(f"{order_type.upper()} ORDER ACCEPTANCE RATIO COMPARISON")
-    print(f"{'='*100}\n")
     
     all_order_ids = set(list(computed.keys()) + list(api.keys()))
     
     matches = 0
     total = 0
     differences = []
-    
-    print(f"{'Order ID':<20} | {'API Accept':<15} | {'Computed Accept':<15} | {'Difference':<15} | {'Match':<10}")
-    print("-" * 100)
+
     
     for order_id in sorted(all_order_ids, key=lambda x: str(x)):
         api_val = api.get(order_id, 0.0)
@@ -225,39 +216,7 @@ def compare_acceptance_ratios(computed: Dict, api: Dict, order_type: str = "Sell
         if not match or total <= 10:
             print(f"{str(order_id):<20} | {api_val:>13.4f} | {comp_val:>13.4f} | {diff:>13.4f} | {match_str:<10}")
     
-    if total > 10 and matches > 10:
-        print(f"... (showing first 10 and all mismatches)")
-    
-    print("-" * 100)
-    if total > 0:
-        match_pct = 100 * matches / total
-        print(f"SUMMARY: {matches}/{total} orders matched within {ACCEPTANCE_TOLERANCE} tolerance ({match_pct:.1f}%)")
-    else:
-        print("SUMMARY: No orders to compare")
-    print(f"{'='*100}\n")
-    
     return matches, total, differences
-
-def extract_loop_families(raw_sell_records: List[Dict]) -> Dict[int, Set[int]]:
-    """
-    Extract loop families from raw sell records.
-    Returns a mapping: loop_family_id -> set of basket IDs in that family.
-    """
-    loop_families = defaultdict(set)
-    
-    for row in raw_sell_records:
-        basket_id = row.get("basketID")
-        looped_basket_id = row.get("loopedBasketID")
-        
-        if basket_id is None or looped_basket_id in (None, "", "None"):
-            continue
-        
-        basket_id = int(basket_id)
-        looped_basket_id = int(looped_basket_id)
-        
-        loop_families[looped_basket_id].add(basket_id)
-    
-    return dict(loop_families)
 
 # --------------------------------
 # CONSTRAINT VERIFICATION
@@ -474,7 +433,7 @@ if __name__ == "__main__":
     
     # Build baskets and extract loop families (pass raw sell_records to populate concomitant/loop info)
     baskets = build_baskets_from_orders(sell_orders, sell_records)
-    loop_families = extract_loop_families(sell_records)
+    loop_families = build_loop_families(baskets)
     
     print(f"\nStructured data:")
     print(f"  - {len(sell_orders)} sell orders processed")
@@ -505,6 +464,7 @@ if __name__ == "__main__":
         sell_orders=multi_orders,
         baskets=baskets,
         unit_capacity_registry=unit_capacity_registry,
+        global_loop_families=loop_families
     )
     
     status = backend.solve(prob)

@@ -9,9 +9,6 @@ from eac.models import SellOrder
 from eac.PricingLP import GlobalPricingLP, group_multi_product_orders, ROUNDING_TOL_DECIMAL
 from eac.solver import PulpSolverBackend
 
-# Set decimal precision
-getcontext().prec = 28
-
 # NESO API endpoints
 SELL_URL = "https://api.neso.energy/api/3/action/datastore_search?resource_id=13b511df-d6ec-4143-afb1-0ecc6fd19810"
 BUY_URL = "https://api.neso.energy/api/3/action/datastore_search?resource_id=1cf68f59-8eb8-4f1d-bccf-11b5a47b24e5"

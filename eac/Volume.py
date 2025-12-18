@@ -31,44 +31,28 @@ class VolumeMILP:
         prob = pulp.LpProblem("EAC_Volume", pulp.LpMaximize)
 
         x_b = {}
-        z_b = {}   # binary switches for buys (conditional accept/reject)
 
         for b in buy_orders_extended:
-            declared_min = float(b.get("min_acceptance_ratio", 0.0) or 0.0)
+            declared_min = b.get("min_acceptance_ratio", 0.0)
             declared_min = max(0.0, min(1.0, declared_min))
             bid = b.get("orderID", b.get("id", ""))
-
-            # continuous acceptance variable with LOWER bound 0 (solver chooses 0 or >= declared_min via z)
             x_b[bid] = pulp.LpVariable(f"x_b_{bid}", lowBound=0.0, upBound=1.0, cat="Continuous")
-
-            # create the binary switch so the solver can choose accept/reject
-            z_b[bid] = pulp.LpVariable(f"z_b_{bid}", lowBound=0, upBound=1, cat="Binary")
-
-            # conditional constraints: if z=0 -> x=0; if z=1 -> x in [declared_min, 1]
-            prob += x_b[bid] <= z_b[bid], f"buy_min_cap_{bid}"
+            z_var = pulp.LpVariable(f"z_b_{bid}", lowBound=0, upBound=1, cat="Binary")
+            prob += x_b[bid] <= z_var, f"buy_min_cap_{bid}"
             if declared_min > 0.0:
-                prob += x_b[bid] >= declared_min * z_b[bid], f"buy_min_floor_{bid}"
+                prob += x_b[bid] >= declared_min * z_var, f"buy_min_floor_{bid}"
 
         x_s = {}
-        x_s_accept = {}
         for s in sell_orders:
             if s.order_type == "parent":
                 x_s[s.key] = pulp.LpVariable(f"x_s_{s.key}", lowBound=0, upBound=1, cat="Binary")
             else:
-                # declared_min is the submitter's min acceptance (unknown -> default 0.0)
-                declared_min = float(s.acceptance)
+                declared_min = s.acceptance
                 declared_min = max(0.0, min(1.0, declared_min))
-
                 x_var = pulp.LpVariable(f"x_s_{s.key}", lowBound=0.0, upBound=1, cat="Continuous")
                 x_s[s.key] = x_var
-
-                # Always create the conditional binary z so the solver can either accept or reject
                 z_var = pulp.LpVariable(f"z_s_{s.key}", lowBound=0, upBound=1, cat="Binary")
-                x_s_accept[s.key] = z_var
-
-                # Conditional min constraints (if z=0 -> x=0; if z=1 -> x in [declared_min,1])
                 prob += x_var <= z_var, f"min_accept_cap_{s.key}"
-                # Only add lower bound when declared_min > 0; but it is safe to add even if 0
                 if declared_min > 0.0:
                     prob += x_var >= declared_min * z_var, f"min_accept_floor_{s.key}"
 
@@ -115,18 +99,9 @@ class VolumeMILP:
                     concomitant_groups[group_key] = group_members
         
         for group_key, group_members in concomitant_groups.items():
-            # Only add constraint if baskets are in y_parent
             baskets_in_group = [b for b in group_members if b in y_parent]
             if baskets_in_group:
                 prob += pulp.lpSum([y_parent[b] for b in baskets_in_group]) <= 1.0, f"mutual_exclusive_{group_key}"
-
-        # Loop families: baskets with same (looped_to, auctionID) must have same y_parent value
-        loop_families = build_loop_families(baskets)
-        for (loop_id, auction_id), basket_ids in loop_families.items():
-            if len(basket_ids) > 1:
-                base = basket_ids[0]
-                for other in basket_ids[1:]:
-                    prob += y_parent[base] == y_parent[other], f"loop_eq_{base}_{other}"
 
         # Product balance constraints
         for p in products:
