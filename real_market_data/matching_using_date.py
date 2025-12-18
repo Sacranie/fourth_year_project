@@ -1,349 +1,591 @@
-﻿from eac.models import SellOrder, BuyOrder, Basket
+﻿from typing import Dict, List, Tuple, Set, Optional
 from collections import defaultdict
-from typing import Dict, List, Tuple, Set
+from decimal import Decimal, getcontext
 import json
 import urllib.request
-from eac.orchestrator import run_market
 import urllib.parse
+import pulp
+
+from eac.models import SellOrder, BuyOrder, Basket
+from eac.multi_product_orders import group_multi_product_orders
+from eac.Volume import VolumeMILP
+from eac.solver import PulpSolverBackend
+
+# Set decimal precision
+getcontext().prec = 28
+
+# NESO API endpoints
+SELL_URL = "https://api.neso.energy/api/3/action/datastore_search?resource_id=13b511df-d6ec-4143-afb1-0ecc6fd19810"
+BUY_URL = "https://api.neso.energy/api/3/action/datastore_search?resource_id=1cf68f59-8eb8-4f1d-bccf-11b5a47b24e5"
+
+ACCEPTANCE_TOLERANCE = 0.01  # Compare within 1%
 
 
+# --------------------------------
+# Load & preprocess API data
+# --------------------------------
 def load_orders_for_auction(base_url: str, auction_id: int, limit: int) -> List[Dict]:
-    """Load all orders for a specific Auction ID."""
+    """Load all orders for a specific Auction ID using the NESO datastore_search API."""
     filters = {"auctionID": auction_id}
     filters_json = json.dumps(filters)
     url = f"{base_url}&limit={limit}&filters={urllib.parse.quote(filters_json)}"
-    
     try:
         with urllib.request.urlopen(url) as response:
             data = json.load(response)
     except Exception as e:
-        print(f"Error fetching data: {e}")
+        print(f"Error loading data: {e}")
         return []
-    
     return data.get("result", {}).get("records", [])
 
 
-def process_auction(sell_url: str, buy_url: str, auction_id: int, test_limit: int) -> Tuple[List[BuyOrder], List[SellOrder], Dict, Set, Dict, Dict, Dict, float, float, Dict, Dict, Dict]:
-    """Load and process all orders for a specific auction ID."""
-    sell_records = load_orders_for_auction(sell_url, auction_id=auction_id, limit=test_limit)
-    buy_records = load_orders_for_auction(buy_url, auction_id=auction_id, limit=test_limit)
+def process_sell_orders(sell_records: List[Dict]) -> Tuple[List[SellOrder], Dict[int, float]]:
+    """
+    Build logical SellOrder objects from raw API rows.
+    Aggregates fragments only insofar as creating one SellOrder per API row here (you later call
+    group_multi_product_orders before feeding the MILP).
+    Returns (sell_orders, api_acceptance_map).
+    """
+    all_sell_orders = []
+    api_acceptance_ratios = {}
 
-    buys = []
-    sells = []
-    basket_registry = {}
-    products = set()
-    expected_prices = {}
-    expected_prices_by_window = defaultdict(dict)  # window -> product -> price
-    unit_capacity_registry = {}
-    overholding = {}
-    welfare_sell_expected = 0.0
-    welfare_buy_expected = 0.0
-    welfare_sell_by_window = defaultdict(float)  # window -> welfare
-    welfare_buy_by_window = defaultdict(float)  # window -> welfare
+    rejected_count = 0
+    executed_count = 0
+    partial_count = 0
 
-    unit_to_basket = defaultdict(list)
-    basket_unit_mapping = {}
-    basket_looped_to_mapping = defaultdict(list)
-
-    # PASS 1: Process sell orders
-    print("\nProcessing sell orders...")
     for row in sell_records:
-        min_acceptance_ratio = float(row.get("acceptanceRatio", 0.0))
-        if row.get("status") == "REJECTED":
-            min_acceptance_ratio = 1.0  # Force rejection
+        status = str(row.get("status", "")).strip().upper()
+        order_id = int(row.get("orderID", 0))
+
+
+        api_acceptance = row.get("acceptanceRatio", 0.0)
+        api_acceptance_ratios[order_id] = api_acceptance
+
+        if status == "REJECTED":
+            rejected_count += 1
+        else:
+            if status == "EXECUTED":
+                executed_count += 1
+            else:
+                partial_count += 1
+
         sell_order = SellOrder(
-            auctionID=int(row.get("auctionID", 0)),
-            registeredAuctionParticipant=str(row.get("registeredAuctionParticipant", "")),
-            auctionUnit=str(row.get("auctionUnit", "")),
-            basketID=int(row.get("basketID", 0)),
-            service=str(row.get("service", "")),
-            deliveryStart=str(row.get("deliveryStart", "")),
-            deliveryEnd=str(row.get("deliveryEnd", "")),
-            orderID=int(row.get("orderID", 0)),
+            auctionID=int(row.get("auctionID", 0) or 0),
+            registeredAuctionParticipant=str(row.get("registeredAuctionParticipant", "") or ""),
+            auctionUnit=str(row.get("auctionUnit", "") or ""),
+            basketID=int(row.get("basketID", 0) or 0),
+            service=str(row.get("service", "") or ""),
+            deliveryStart=str(row.get("deliveryStart", "") or ""),
+            deliveryEnd=str(row.get("deliveryEnd", "") or ""),
+            orderID=int(order_id),
             orderType=str(row.get("orderType", "parent")).lower(),
-            auctionProduct=str(row.get("auctionProduct", "")),
-            quantity=float(row.get("quantity", 0.0)),
-            price=float(row.get("priceLimit", 0.0)),
-            orderEntryTime=str(row.get("orderEntryTime", "")),
-            product_id=str(row.get("productID", "")),
-            min_acceptance_ratio=min_acceptance_ratio
+            auctionProduct=str(row.get("auctionProduct", "") or ""),
+            quantity=float(row.get("quantity", 0.0) or 0.0),
+            price=float(row.get("priceLimit", row.get("price", 0.0) or 0.0)),
+            orderEntryTime=str(row.get("orderEntryTime", "") or ""),
+            product_id=str(row.get("productID", "") or ""),
+            status=status,
+            min_acceptance_ratio=row.get("minAcceptanceRatio", 0.0) or 0.0,
         )
 
-        sells.append(sell_order)
-        acceptance_ratio = float(row.get("acceptanceRatio", 0.0))
-        quantity = float(row.get("quantity", 0.0))
-        price_limit = float(row.get("priceLimit", 0.0))
-        welfare_sell_expected -= (acceptance_ratio * quantity * price_limit)
+        all_sell_orders.append(sell_order)
 
-        basket_id = row.get("basketID")
-        unit = row.get("auctionUnit")
-        delivery_start = str(row.get("deliveryStart", ""))
-        delivery_end = str(row.get("deliveryEnd", ""))
-        window = (delivery_start, delivery_end)
-        welfare_sell_by_window[window] -= (acceptance_ratio * quantity * price_limit)
-        
-        if basket_id not in basket_registry:
-            if basket_id not in basket_unit_mapping:
-                basket_unit_mapping[basket_id] = unit
-                unit_to_basket[unit].append(basket_id)
-                
-                looped_basket_id = row.get("loopedBasketID")
-                if looped_basket_id:
-                    basket_looped_to_mapping[str(looped_basket_id)].append(basket_id)
-                
-                basket = Basket(
-                    id=basket_id,
-                    auctionID=int(row.get("auctionID", 0)),
-                    unit=unit,
-                    concomitant=[],
-                    looped_to=None
-                )
-                basket_registry[basket_id] = basket
-            
-            if unit not in unit_capacity_registry:
-                unit_capacity_registry[unit] = 100000
+    print(f"\nSell Orders Status Breakdown:")
+    print(f"  - EXECUTED: {executed_count}")
+    print(f"  - PARTIALLY_EXECUTED: {partial_count}")
+    print(f"  - REJECTED: {rejected_count}")
+    print(f"  - Total: {len(all_sell_orders)}")
+    multi_orders = group_multi_product_orders(all_sell_orders)
+    # We need to now iterate through the multi_orders and adjust the acceptance ratios
+    # If they were rejected we should se to 1 and if they were executed or partially executed we should set to 1
+    for orders in multi_orders:
+        if not orders.is_accepted:
+            orders.acceptance = 1.0
 
-        product = row.get("auctionProduct")
-        clearing_price = row.get("clearingPrice")
-        if product and clearing_price is not None:
-            expected_prices[product] = float(clearing_price)
-            expected_prices_by_window[window][product] = float(clearing_price)
-        
-        if product:
-            products.add(product)
-    
-    # PASS 2: Build concomitant relationships
-    for unit, basket_ids in unit_to_basket.items():
-        for basket_id in basket_ids:
-            concomitant = [b for b in basket_ids if b != basket_id]
-            basket_registry[basket_id].concomitant = concomitant
-    
-    # PASS 3: Build looped_to relationships
-    for looped_to_id, basket_ids in basket_looped_to_mapping.items():
-        for basket_id in basket_ids:
-            if basket_id in basket_registry:
-                # looped_to should be a single integer ID, not a list
-                # Set it to the first looped_to_id in the group
-                basket_registry[basket_id].looped_to = int(looped_to_id) if looped_to_id else None
-                
-    # Process buy orders
-    print("Processing buy orders...")
+    return multi_orders, all_sell_orders, api_acceptance_ratios
+
+
+def process_buy_orders(buy_records: List[Dict], auction_id: Optional[int] = None) -> Tuple[List[BuyOrder], Dict[int, float]]:
+    """
+    Build BuyOrder objects; return (buy_orders, api_acceptance_map).
+    auction_id is used as fallback if a row lacks auctionID.
+    """
+    all_buy_orders = []
+    api_acceptance_ratios = {}
+
     for row in buy_records:
-        min_acceptance_ratio = float(row.get("acceptanceRatio", 0.0))
-        if row.get("status") == "REJECTED":
-            min_acceptance_ratio = 1.0  # Force rejection
-        raw = str(row.get("paradoxicallyAcceptanceAllowed", "")).strip().lower()
-        paradoxical = raw == "true"
+        status = str(row.get("status", "")).strip().upper()
+        order_id = row.get("orderID", 0)
+
+        # min_acceptance: we keep this as a lower bound; force-reject is handled in the model (use .force_reject if needed)
+        if status == "REJECTED":
+            min_acceptance = 1.0   # leave lower bound at 0; force-reject should be handled by variable upper bound or .force_reject flag
+        else:
+            min_acceptance = row.get("acceptanceRatio", 0.0)
+
+        api_acceptance = row.get("acceptanceRatio", 0.0)
+        api_acceptance_ratios[order_id] = api_acceptance
+
+        raw = row.get("paradoxicallyAcceptanceAllowed", "false")
+        paradoxical = (raw == "true")
+
         buy_order = BuyOrder(
-            auctionID=int(row.get("auctionID", 0)),
-            orderID=int(row.get("orderID", 0)),
-            service=str(row.get("service", "")),
-            auctionProduct=str(row.get("auctionProduct", "")),
-            deliveryStart=str(row.get("deliveryStart", "")),
-            deliveryEnd=str(row.get("deliveryEnd", "")),
-            quantity=float(row.get("quantity", 0.0)),
-            price=float(row.get("price", 0.0)),
+            auctionID=auction_id,
+            orderID=order_id,
+            service=str(row.get("service", "") or ""),
+            auctionProduct=str(row.get("auctionProduct", "") or ""),
+            deliveryStart=str(row.get("deliveryStart", "") or ""),
+            deliveryEnd=str(row.get("deliveryEnd", "") or ""),
+            quantity=float(row.get("quantity", 0.0) or 0.0),
+            price=float(row.get("priceLimit", row.get("price", 0.0) or 0.0)),
             paradoxical=paradoxical,
-            min_acceptance_ratio=min_acceptance_ratio
+            min_acceptance_ratio=min_acceptance,
         )
 
-        buys.append(buy_order)
-        acceptance_ratio = float(row.get("acceptanceRatio", 0.0))
-        quantity = float(row.get("quantity", 0.0))
-        buy_price = float(row.get("price", 0.0))
-        welfare_buy_expected += (acceptance_ratio * quantity * buy_price)
-        
-        delivery_start = str(row.get("deliveryStart", ""))
-        delivery_end = str(row.get("deliveryEnd", ""))
-        window = (delivery_start, delivery_end)
-        welfare_buy_by_window[window] += (acceptance_ratio * quantity * buy_price)
-        
-        product = row.get("auctionProduct")
-        if product:
-            products.add(product)
-    
-    return buys, sells, basket_registry, products, expected_prices, unit_capacity_registry, overholding, welfare_sell_expected, welfare_buy_expected, dict(welfare_sell_by_window), dict(welfare_buy_by_window), dict(expected_prices_by_window)
+        all_buy_orders.append(buy_order)
 
+    print(f"\nBuy Orders: {len(all_buy_orders)} loaded")
+    return all_buy_orders, api_acceptance_ratios
 
-if __name__ == "__main__":
-    SELL_URL = "https://api.neso.energy/api/3/action/datastore_search?resource_id=13b511df-d6ec-4143-afb1-0ecc6fd19810"
-    BUY_URL = "https://api.neso.energy/api/3/action/datastore_search?resource_id=1cf68f59-8eb8-4f1d-bccf-11b5a47b24e5"
-    AUCTION_ID = 1112
-    TEST_LIMIT = 1000000000
-    
+def build_baskets_from_orders(sell_orders: List[SellOrder], raw_records: List[Dict]) -> List[Basket]:
+
+    baskets = {}
+    for s in sell_orders:
+        bid = int(s.basketID)
+        if bid not in baskets:
+            baskets[bid] = Basket(id=bid, auctionID=int(s.auctionID), unit=s.auctionUnit, looped_to=None, concomitant=[])
+
+    concomitance = defaultdict(set)
+
+    # populate looped_to and concomitant fields
+    for row in raw_records:
+        b_id = row.get("basketID")
+
+        if b_id not in baskets:
+            continue
+
+        # loopedBasketID may be absent/empty
+        looped = row.get("loopedBasketID")
+        if looped not in (None, "", "None"):
+            baskets[b_id].looped_to = int(looped)
+
+        delivery_start = row.get("deliveryStart")
+        delivery_end = row.get("deliveryEnd")
+        unit = row.get("auctionUnit")
+
+        concomitance[(unit, delivery_start, delivery_end)].add(int(b_id))
+
+    for (unit, delivery_start, delivery_end), basket_ids in concomitance.items():
+        for basket_id in basket_ids:
+            baskets[basket_id].concomitant = list(basket_ids - {basket_id})
+
+    print(f"\nBaskets built: {len(baskets)} (concomitant/loop info where present)")
+    return list(baskets.values())
+
+# --------------------------------
+# ACCEPTANCE RATIO COMPARISON
+# --------------------------------
+def compare_acceptance_ratios(computed: Dict, api: Dict, order_type: str = "Sell"):
+    """
+    Compare computed acceptance ratios vs API acceptance ratios.
+    Returns: (matches, total, differences_list)
+    """
     print(f"\n{'='*100}")
-    print(f"MARKET CLEARING FOR AUCTION ID: {AUCTION_ID}")
+    print(f"{order_type.upper()} ORDER ACCEPTANCE RATIO COMPARISON")
     print(f"{'='*100}\n")
     
-    print(f"Loading orders for Auction {AUCTION_ID}...")
-    buys, sells, basket_registry, products, expected_prices, unit_capacity_registry, overholding, welfare_sell_expected, welfare_buy_expected, welfare_sell_by_window, welfare_buy_by_window, expected_prices_by_window = process_auction(
-        SELL_URL,
-        BUY_URL,
-        AUCTION_ID,
-        TEST_LIMIT
-    )
+    all_order_ids = set(list(computed.keys()) + list(api.keys()))
     
-    print(f"✓ Loaded {len(buys)} buy orders and {len(sells)} sell orders")
+    matches = 0
+    total = 0
+    differences = []
     
-    if not buys or not sells:
-        print("No orders found for this auction")
-        exit(1)
-    
-    # Extract unique delivery windows from loaded orders
-    windows = set()
-    for s in sells:
-        windows.add((s.deliveryStart, s.deliveryEnd))
-    windows = sorted(list(windows))
-    
-    print(f"✓ Found {len(windows)} delivery time window(s):\n")
-    for idx, (start, end) in enumerate(windows, 1):
-        print(f"  {idx}. {start} → {end}")
-    
-    print(f"\n{'='*100}")
-    print(f"RUNNING MARKET CLEARING")
-    print(f"(Orchestrator handles time window separation automatically)")
-    print(f"{'='*100}\n")
-    
-    # Run market clearing - the orchestrator will handle time window separation automatically
-    results = run_market(
-        products=products,
-        buy_orders=buys,
-        sell_orders=sells,
-        baskets=list(basket_registry.values()),
-        unit_capacity_registry=unit_capacity_registry,
-        overholding=overholding,
-        msg=0
-    )
-    
-    print(f"\n{'='*100}")
-    print(f"MARKET CLEARING RESULTS")
-    print(f"{'='*100}\n")
-    
-    # Extract window-specific results
-    window_results = results.get("window_results", {})
-    all_products_sorted = sorted(products)
-    
-    print(f"Overall Status: {'✓ FINAL' if results.get('final') else '✗ NOT FINAL'}\n")
-    
-    if not window_results:
-        print("No window results found")
-        exit(1)
-    
-    print(f"MARKET CLEARING PRICES (MCP) BY DELIVERY TIME WINDOW")
+    print(f"{'Order ID':<20} | {'API Accept':<15} | {'Computed Accept':<15} | {'Difference':<15} | {'Match':<10}")
     print("-" * 100)
     
-    if all_products_sorted and window_results:
-        # Header
-        header = "Delivery Window".ljust(50)
-        for product in all_products_sorted:
-            header += f" | {product:>8}"
-        print(header)
-        print("=" * len(header))
+    for order_id in sorted(all_order_ids, key=lambda x: str(x)):
+        api_val = api.get(order_id, 0.0)
+        comp_val = computed.get(order_id, 0.0)
         
-        # Data rows
-        for window, window_res in sorted(window_results.items()):
-            start, end = window
-            row = f"{start} → {end}".ljust(50)
-            
-            computed_prices = window_res.get("prices_unrounded") or {}
-            for product in all_products_sorted:
-                price = (computed_prices.get(product) if computed_prices else None) or 0.0
-                row += f" | £{price:>7.2f}"
-            
-            print(row)
+        diff = abs(api_val - comp_val)
+        match = diff <= ACCEPTANCE_TOLERANCE
+        match_str = "✓" if match else "✗"
         
-        print("=" * len(header))
+        total += 1
+        if match:
+            matches += 1
+        else:
+            differences.append({
+                'order_id': order_id,
+                'api': api_val,
+                'computed': comp_val,
+                'difference': diff
+            })
         
-        # Final rounded prices per window
-        if results.get("prices_rounded"):
-            print(f"\nFINAL ROUNDED PRICES (per window):")
-            final_prices_dict = results.get("prices_rounded") or {}
-            for window in sorted(final_prices_dict.keys()):
-                start, end = window
-                print(f"  Window {start} → {end}:")
-                for product in all_products_sorted:
-                    window_prices = final_prices_dict.get(window, {})
-                    price = window_prices.get(product, 0.0) if isinstance(window_prices, dict) else 0.0
-                    print(f"    {product}: £{price:>7.2f}")
+        # Only print mismatches or a sample
+        if not match or total <= 10:
+            print(f"{str(order_id):<20} | {api_val:>13.4f} | {comp_val:>13.4f} | {diff:>13.4f} | {match_str:<10}")
     
-    # Detailed window analysis
-    if window_results:
-        print(f"\n\n{'='*100}")
-        print("DETAILED WINDOW ANALYSIS")
-        print(f"{'='*100}\n")
-        
-        for window, window_res in sorted(window_results.items()):
-            start, end = window
-            print(f"Window: {start} → {end}")
-            print("-" * 100)
-            
-            milp_status = window_res.get("milp_status", "Unknown")
-            prices_status = window_res.get("prices_status", "Unknown")
-            is_final = window_res.get("final", False)
-            
-            print(f"Status: MILP={milp_status}, Pricing={prices_status}, Final={is_final}\n")
-            
-            # Welfare analysis for this window
-            expected_welfare_sell = welfare_sell_by_window.get(window, 0.0)
-            expected_welfare_buy = welfare_buy_by_window.get(window, 0.0)
-            expected_total_welfare = expected_welfare_sell + expected_welfare_buy
-            
-            # Compute welfare from actual acceptance ratios and BID/ASK PRICES (not MCP!)
-            x_s = window_res.get("x_s", {})
-            x_b = window_res.get("x_b", {})
-            
-            computed_welfare_sell = 0.0
-            computed_welfare_buy = 0.0
-            
-            # Calculate computed welfare from sell orders in this window using SELL PRICES (ask)
-            for sell in sells:
-                if (sell.deliveryStart, sell.deliveryEnd) == window:
-                    acceptance_ratio = x_s.get(sell.orderID, 0.0)
-                    # Use the sell order's price limit, NOT the market clearing price!
-                    computed_welfare_sell -= (acceptance_ratio * sell.quantity * sell.price)
-            
-            # Calculate computed welfare from buy orders in this window using BUY PRICES (bid)
-            for buy in buys:
-                if (buy.deliveryStart, buy.deliveryEnd) == window:
-                    acceptance_ratio = x_b.get(buy.orderID, 0.0)
-                    # Use the buy order's price (bid), NOT the market clearing price!
-                    computed_welfare_buy += (acceptance_ratio * buy.quantity * buy.price)
-            
-            computed_total_welfare = computed_welfare_sell + computed_welfare_buy
-            
-            print(f"Welfare Analysis:")
-            print(f"  Expected Total Welfare: £{expected_total_welfare:>12.2f}")
-            print(f"  Computed Total Welfare: £{computed_total_welfare:>12.2f}")
-            print(f"  Difference:             £{abs(expected_total_welfare - computed_total_welfare):>12.2f}")
-            print(f"  Match: {'✓ YES' if abs(expected_total_welfare - computed_total_welfare) < 0.01 else '✗ NO'}\\n")
-            
-            # Price comparison
-            print(f"Market Clearing Price (MCP) Comparison:")
-            expected_window_prices = expected_prices_by_window.get(window, {})
-            window_computed_prices = window_res.get("prices_unrounded") or {}
-            header = f"{'Product':<15} | {'Expected':<12} | {'Computed':<12} | {'Match':<10}"
-            print(f"  {header}")
-            print(f"  {'-' * len(header)}")
-            
-            for product in all_products_sorted:
-                expected_price = expected_window_prices.get(product, 0.0)
-                computed_price = window_computed_prices.get(product, 0.0)
-                price_diff = abs(expected_price - computed_price)
-                match_str = "✓ YES" if price_diff < 0.01 else f"✗ NO (Δ£{price_diff:.4f})"
-                print(f"  {product:<15} | £{expected_price:>10.4f} | £{computed_price:>10.4f} | {match_str}")
-            print()
+    if total > 10 and matches > 10:
+        print(f"... (showing first 10 and all mismatches)")
     
-    # Summary
-    print(f"\n{'='*100}")
-    print("SUMMARY")
+    print("-" * 100)
+    if total > 0:
+        match_pct = 100 * matches / total
+        print(f"SUMMARY: {matches}/{total} orders matched within {ACCEPTANCE_TOLERANCE} tolerance ({match_pct:.1f}%)")
+    else:
+        print("SUMMARY: No orders to compare")
     print(f"{'='*100}\n")
     
-    print(f"Auction ID: {AUCTION_ID}")
-    print(f"Total Orders: {len(buys)} buy + {len(sells)} sell = {len(buys) + len(sells)} orders")
-    print(f"Delivery Time Windows: {len(windows)}")
-    print(f"Products: {', '.join(sorted(products))}")
-    print(f"Market Clearing Status: {'✓ FINAL' if results.get('final') else '✗ NOT FINAL'}")
+    return matches, total, differences
+
+def extract_loop_families(raw_sell_records: List[Dict]) -> Dict[int, Set[int]]:
+    """
+    Extract loop families from raw sell records.
+    Returns a mapping: loop_family_id -> set of basket IDs in that family.
+    """
+    loop_families = defaultdict(set)
+    
+    for row in raw_sell_records:
+        basket_id = row.get("basketID")
+        looped_basket_id = row.get("loopedBasketID")
+        
+        if basket_id is None or looped_basket_id in (None, "", "None"):
+            continue
+        
+        basket_id = int(basket_id)
+        looped_basket_id = int(looped_basket_id)
+        
+        loop_families[looped_basket_id].add(basket_id)
+    
+    return dict(loop_families)
+
+# --------------------------------
+# CONSTRAINT VERIFICATION
+# --------------------------------
+def verify_loop_constraints(x_s: Dict[int, float], sell_orders: List[SellOrder], 
+                           loop_families: Dict, tolerance: float = 0.01):
+    """
+    Verify that baskets in the same loop family are either ALL accepted or ALL rejected.
+    """
+    print(f"\n{'='*100}")
+    print("LOOP CONSTRAINT VERIFICATION")
+    print(f"{'='*100}\n")
+    
+    # Build basket acceptance from order acceptances
+    basket_acceptance = {}
+    orders_by_basket = defaultdict(list)
+    
+    for order in sell_orders:
+        orders_by_basket[order.basketID].append(order)
+    
+    for basket_id, orders in orders_by_basket.items():
+        # A basket is "accepted" if any of its parent orders are accepted
+        parent_orders = [o for o in orders if o.orderType == "parent"]
+        if parent_orders:
+            # Check if all parents are accepted (value close to 1) or all rejected (close to 0)
+            parent_acceptances = [x_s.get(o.orderID, 0.0) for o in parent_orders]
+            basket_acceptance[basket_id] = max(parent_acceptances) if parent_acceptances else 0.0
+    
+    violations = []
+    passed = 0
+    
+    print(f"Found {len(loop_families)} loop families to verify\n")
+    
+    for loop_id, basket_ids in loop_families.items():
+        if len(basket_ids) < 2:
+            continue  # No constraint for single basket
+        
+        acceptances = [basket_acceptance.get(bid, 0.0) for bid in basket_ids]
+        
+        # Check if all baskets have similar acceptance (all ~0 or all ~1)
+        min_accept = min(acceptances)
+        max_accept = max(acceptances)
+        
+        if max_accept - min_accept > tolerance:
+            violations.append({
+                'loop_id': loop_id,
+                'basket_ids': basket_ids,
+                'acceptances': acceptances,
+                'min': min_accept,
+                'max': max_accept,
+                'spread': max_accept - min_accept
+            })
+            print(f"✗ Loop {loop_id}: Baskets {basket_ids}")
+            print(f"  Acceptances: {[f'{a:.4f}' for a in acceptances]}")
+            print(f"  Spread: {max_accept - min_accept:.4f} (> {tolerance} tolerance)\n")
+        else:
+            passed += 1
+    
+    print(f"{'='*100}")
+    if len(violations) == 0:
+        print(f"✓✓✓ ALL LOOP CONSTRAINTS SATISFIED ✓✓✓")
+        print(f"  - {passed} loop families: ALL PASSED")
+    else:
+        print(f"⚠⚠⚠ LOOP CONSTRAINT VIOLATIONS DETECTED ⚠⚠⚠")
+        print(f"  - {len(violations)} loop families violated")
+        print(f"  - {passed} loop families passed")
+    print(f"{'='*100}\n")
+    
+    return violations
+
+
+def verify_product_balance(x_s: Dict[int, float], x_b: Dict[str, float],
+                          sell_orders: List[SellOrder], buy_orders: List[BuyOrder],
+                          tolerance: float = 0.01):
+    """
+    Verify product balance: total sell volume = total buy volume for each product.
+    """
+    print(f"\n{'='*100}")
+    print("PRODUCT BALANCE VERIFICATION")
+    print(f"{'='*100}\n")
+    
+    products = set()
+    for order in sell_orders:
+        products.add(order.auctionProduct)
+    for order in buy_orders:
+        products.add(order.auctionProduct)
+    
+    violations = []
+    passed = 0
+    
+    print(f"{'Product':<20} | {'Sell Volume':<15} | {'Buy Volume':<15} | {'Difference':<15} | {'Balanced':<10}")
+    print("-" * 100)
+    
+    for product in sorted(products):
+        sell_vol = sum(
+            order.quantity * x_s.get(order.orderID, 0.0)
+            for order in sell_orders
+            if order.auctionProduct == product
+        )
+        
+        buy_vol = sum(
+            order.quantity * x_b.get(order.orderID, 0.0)
+            for order in buy_orders
+            if order.auctionProduct == product
+        )
+        
+        diff = abs(sell_vol - buy_vol)
+        balanced = diff <= tolerance
+        balanced_str = "✓" if balanced else "✗"
+        
+        if balanced:
+            passed += 1
+        else:
+            violations.append({
+                'product': product,
+                'sell_vol': sell_vol,
+                'buy_vol': buy_vol,
+                'difference': diff
+            })
+        
+        print(f"{product:<20} | {sell_vol:>13.2f} | {buy_vol:>13.2f} | {diff:>13.2f} | {balanced_str:<10}")
+    
+    print("-" * 100)
+    if len(violations) == 0:
+        print(f"✓✓✓ ALL PRODUCTS BALANCED ✓✓✓")
+    else:
+        print(f"⚠ {len(violations)} products not balanced")
+    print(f"{'='*100}\n")
+    
+    return violations
+
+# ---------- Welfare & procurement cost comparison ----------
+def compute_welfare_and_procurement(sell_orders, buy_orders,
+                                    sell_accept_map, buy_accept_map,
+                                    label="API"):
+    """
+    sell_orders: flat list of SellOrder fragments (each has orderID, price, quantity, auctionProduct)
+    buy_orders: list of BuyOrder objects or dicts (must have orderID, price, quantity, auctionProduct)
+    sell_accept_map: dict orderID -> acceptance (0..1)
+    buy_accept_map: dict orderID -> acceptance (0..1)
+    label: string tag for prints
+    returns: dict with totals and per-product breakdown
+    """
+    total_buy_value = 0.0   # sum(price * accepted_qty) across buys
+    total_sell_cost = 0.0   # sum(price * accepted_qty) across sells
+    per_product = {}  # product -> {buy_value, sell_cost, buy_qty, sell_qty}
+
+    # sells (flat fragments)
+    for s in sell_orders:
+        oid = int(getattr(s, "orderID", getattr(s, "orderId", s.get("orderID") if isinstance(s, dict) else None)))
+        price = float(getattr(s, "price", s.get("price", 0.0) if isinstance(s, dict) else 0.0))
+        qty = float(getattr(s, "quantity", s.get("quantity", 0.0) if isinstance(s, dict) else 0.0))
+        prod = getattr(s, "auctionProduct", s.get("auctionProduct", "") if isinstance(s, dict) else "")
+
+        acc = float(sell_accept_map.get(oid, 0.0) or 0.0)
+        accepted_qty = qty * acc
+        total_sell_cost += price * accepted_qty
+
+        p = per_product.setdefault(prod, {"buy_value":0.0, "sell_cost":0.0, "buy_qty":0.0, "sell_qty":0.0})
+        p["sell_cost"] += price * accepted_qty
+        p["sell_qty"] += accepted_qty
+
+    # buys
+    for b in buy_orders:
+        # buy_orders might be BuyOrder objects or dicts; handle both
+        bid = b.get("orderID", b.get("id", None)) if isinstance(b, dict) else getattr(b, "orderID", None)
+        price = float(b.get("price", 0.0)) if isinstance(b, dict) else float(getattr(b, "price", 0.0))
+        qty = float(b.get("quantity", 0.0)) if isinstance(b, dict) else float(getattr(b, "quantity", 0.0))
+        prod = b.get("auctionProduct", "") if isinstance(b, dict) else getattr(b, "auctionProduct", "")
+
+        acc = float(buy_accept_map.get(bid, 0.0) or 0.0)
+        accepted_qty = qty * acc
+        total_buy_value += price * accepted_qty
+
+        p = per_product.setdefault(prod, {"buy_value":0.0, "sell_cost":0.0, "buy_qty":0.0, "sell_qty":0.0})
+        p["buy_value"] += price * accepted_qty
+        p["buy_qty"] += accepted_qty
+
+    welfare = total_buy_value - total_sell_cost
+    return {
+        "label": label,
+        "total_buy_value": total_buy_value,
+        "total_sell_cost": total_sell_cost,
+        "welfare": welfare,
+        "per_product": per_product
+    }
+
+
+# ---------------------------------------
+# Main execution
+# ---------------------------------------
+# ---------------------------------------
+# Main execution (REPLACE your current __main__ block with this)
+# ---------------------------------------
+if __name__ == "__main__":
+    AUCTION_ID = 1118
+    TEST_LIMIT = 1000000
+
+    print(f"\n{'='*100}")
+    print(f"VOLUME MILP VERIFICATION - AUCTION {AUCTION_ID}")
+    print(f"{'='*100}\n")
+
+    print("Loading orders from API...")
+    sell_records = load_orders_for_auction(SELL_URL, auction_id=AUCTION_ID, limit=TEST_LIMIT)
+    buy_records = load_orders_for_auction(BUY_URL, auction_id=AUCTION_ID, limit=TEST_LIMIT)
+    
+    print(f"\nRaw records loaded:")
+    print(f"  - {len(sell_records)} sell order records")
+    print(f"  - {len(buy_records)} buy order records")
+
+    # Process orders
+    multi_orders, sell_orders, api_sell_acceptance = process_sell_orders(sell_records)
+    buy_orders, api_buy_acceptance = process_buy_orders(buy_records, auction_id=AUCTION_ID)
+    
+    # Build baskets and extract loop families (pass raw sell_records to populate concomitant/loop info)
+    baskets = build_baskets_from_orders(sell_orders, sell_records)
+    loop_families = extract_loop_families(sell_records)
+    
+    print(f"\nStructured data:")
+    print(f"  - {len(sell_orders)} sell orders processed")
+    print(f"  - {len(buy_orders)} buy orders processed")
+    print(f"  - {len(baskets)} baskets created")
+    print(f"  - {len(loop_families)} loop families identified")
+    
+    # Extract unique products
+    products = set(o.auctionProduct for o in sell_orders) | set(o.auctionProduct for o in buy_orders)
+    print(f"  - {len(products)} unique products")
+
+    # Extract unique units for capacity registry
+    units = set(order.auctionUnit for order in sell_orders)
+    unit_capacity_registry = {unit: 1e9 for unit in units}  # Set very high capacity for each unit
+
+    # Run Volume MILP
+    print(f"\n{'='*100}")
+    print("SOLVING VOLUME MILP...")
+    print(f"{'='*100}\n")
+    
+    backend = PulpSolverBackend(msg=0)
+    volume_milp = VolumeMILP(backend=backend)
+    
+    # Build and solve
+    prob, x_b_vars, x_s_vars, y_parent_vars, _ = volume_milp.build_problem(
+        products=list(products),
+        buy_orders=buy_orders,
+        sell_orders=multi_orders,
+        baskets=baskets,
+        unit_capacity_registry=unit_capacity_registry,
+    )
+    
+    status = backend.solve(prob)
+    print(f"Solver status: {status}")
+    
+    # Extract solution (robust: read directly from the returned variable maps)
+    x_s_computed = {sid: float(pulp.value(var) if pulp.value(var) is not None else 0.0) for sid, var in x_s_vars.items()}
+    x_b_computed = {bid: float(pulp.value(var) if pulp.value(var) is not None else 0.0) for bid, var in x_b_vars.items()}
+
+    # Map multi-order acceptances to individual order IDs for verification
+    x_s_per_order = {}
+    for multi_order in multi_orders:
+        acceptance = x_s_computed.get(multi_order.key, 0.0)
+        for fragment in multi_order.fragments:
+            x_s_per_order[fragment.orderID] = acceptance
+
+    # ===== COMPARE ACCEPTANCE RATIOS =====
+    sell_matches, sell_total, sell_diffs = compare_acceptance_ratios(x_s_per_order, api_sell_acceptance, "Sell")
+    buy_matches, buy_total, buy_diffs  = compare_acceptance_ratios(x_b_computed, api_buy_acceptance, "Buy")
+
+    # ===== VERIFY CONSTRAINTS =====
+    loop_violations = verify_loop_constraints(x_s_per_order, sell_orders, loop_families)
+    balance_violations = verify_product_balance(x_s_per_order, x_b_computed, sell_orders, buy_orders)
+
+    # Compute API (observed) welfare
+    api_w = compute_welfare_and_procurement(
+        sell_orders=sell_orders,
+        buy_orders=buy_orders,
+        sell_accept_map=api_sell_acceptance,
+        buy_accept_map=api_buy_acceptance,
+        label="API_observed"
+    )
+
+    # Compute MILP (your computed) welfare
+    milp_w = compute_welfare_and_procurement(
+        sell_orders=sell_orders,
+        buy_orders=buy_orders,
+        sell_accept_map=x_s_per_order,   # mapped from multi_orders fragments
+        buy_accept_map=x_b_computed,
+        label="MILP_computed"
+    )
+
+
+    print("\n" + "="*80)
+    print("WELFARE & PROCUREMENT COMPARISON")
+    print("="*80)
+    print(f"{'Metric':<30} | {'API':>15} | {'MILP':>15} | {'Diff (MILP - API)':>15}")
+    print("-"*80)
+    print(f"{'Total buy value':<30} | {api_w['total_buy_value']:15.2f} | {milp_w['total_buy_value']:15.2f} | {milp_w['total_buy_value']-api_w['total_buy_value']:15.2f}")
+    print(f"{'Total sell cost (procurement)':<30} | {api_w['total_sell_cost']:15.2f} | {milp_w['total_sell_cost']:15.2f} | {milp_w['total_sell_cost']-api_w['total_sell_cost']:15.2f}")
+    print(f"{'Welfare (buy - sell)':<30} | {api_w['welfare']:15.2f} | {milp_w['welfare']:15.2f} | {milp_w['welfare']-api_w['welfare']:15.2f}")
+    print("-"*80)
+
+
+
+    # ===== FINAL SUMMARY =====
+    print(f"\n{'='*100}")
+    print("FINAL VERIFICATION SUMMARY")
+    print("=" * 100)
+    
+    print(f"\n1. ACCEPTANCE RATIO MATCHING:")
+    sell_pct = 100 * sell_matches / sell_total if sell_total > 0 else 0
+    buy_pct = 100 * buy_matches / buy_total if buy_total > 0 else 0
+    print(f"   Sell Orders: {sell_matches}/{sell_total} matched ({sell_pct:.1f}%)")
+    print(f"   Buy Orders:  {buy_matches}/{buy_total} matched ({buy_pct:.1f}%)")
+    
+    print(f"\n2. CONSTRAINT SATISFACTION:")
+    print(f"   Loop Constraints: {len(loop_families) - len(loop_violations)}/{len(loop_families)} passed")
+    print(f"   Product Balance: {len(products) - len(balance_violations)}/{len(products)} balanced")
+    
+    total_issues = len(sell_diffs) + len(buy_diffs) + len(loop_violations) + len(balance_violations)
+    
+    if total_issues == 0:
+        print(f"\n✓✓✓ PERFECT MATCH - ALL VERIFICATIONS PASSED ✓✓✓")
+    else:
+        print(f"\n⚠ Found {total_issues} total issues:")
+        print(f"   - {len(sell_diffs)} sell order mismatches")
+        print(f"   - {len(buy_diffs)} buy order mismatches")
+        print(f"   - {len(loop_violations)} loop constraint violations")
+        print(f"   - {len(balance_violations)} product balance issues")
     
     print(f"\n{'='*100}")
-    print("MARKET CLEARING COMPLETE")
-    print("="*100)
+    print("VERIFICATION COMPLETE")
+    print(f"{'='*100}\n")

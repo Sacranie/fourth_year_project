@@ -1,11 +1,9 @@
 from typing import List, Dict, Tuple, Optional, Iterable, Set
 from collections import defaultdict
-from decimal import Decimal, getcontext
-import logging
+from decimal import Decimal
 import pulp
 from eac.solver import PulpSolverBackend
 from eac.models import SellOrder, MultiProductOrder
-from eac.rounding import round_price_up_to_cent
 from eac.multi_product_orders import group_multi_product_orders
 
 """
@@ -90,7 +88,7 @@ class GlobalPricingLP:
              ) -> Tuple[Dict[Tuple[str, Tuple], float], pulp.LpProblem, str]:
         basket_to_loop = basket_to_loop or defaultdict(list)
 
-        multi_orders = group_multi_product_orders(all_sell_orders, x_s_val)
+        multi_orders = group_multi_product_orders(all_sell_orders)
         active_product_windows = _collect_active_pairs(multi_orders)
 
         # Use global price bounds for all active product-window pairs (per NESO spec)

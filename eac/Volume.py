@@ -3,6 +3,7 @@ from collections import defaultdict
 import pulp
 from eac.Validators import build_loop_families, validate_unit_capacity
 from eac.PricingLP import GlobalPricingLP
+from eac.multi_product_orders import group_multi_product_orders
 from eac.solver import PulpSolverBackend
 
 MAX_MILP_RETRIES = 50
@@ -30,38 +31,57 @@ class VolumeMILP:
         prob = pulp.LpProblem("EAC_Volume", pulp.LpMaximize)
 
         x_b = {}
+        z_b = {}   # binary switches for buys (conditional accept/reject)
+
         for b in buy_orders_extended:
-            low = float(b.get("min_acceptance_ratio", 0.0))
-            low = max(0.0, min(1.0, low))
+            declared_min = float(b.get("min_acceptance_ratio", 0.0) or 0.0)
+            declared_min = max(0.0, min(1.0, declared_min))
             bid = b.get("orderID", b.get("id", ""))
-            x_b[bid] = pulp.LpVariable(f"x_b_{bid}", lowBound=low, upBound=1, cat="Continuous")
+
+            # continuous acceptance variable with LOWER bound 0 (solver chooses 0 or >= declared_min via z)
+            x_b[bid] = pulp.LpVariable(f"x_b_{bid}", lowBound=0.0, upBound=1.0, cat="Continuous")
+
+            # create the binary switch so the solver can choose accept/reject
+            z_b[bid] = pulp.LpVariable(f"z_b_{bid}", lowBound=0, upBound=1, cat="Binary")
+
+            # conditional constraints: if z=0 -> x=0; if z=1 -> x in [declared_min, 1]
+            prob += x_b[bid] <= z_b[bid], f"buy_min_cap_{bid}"
+            if declared_min > 0.0:
+                prob += x_b[bid] >= declared_min * z_b[bid], f"buy_min_floor_{bid}"
 
         x_s = {}
         x_s_accept = {}
         for s in sell_orders:
-            if s.orderType == "parent":
-                x_s[s.orderID] = pulp.LpVariable(f"x_s_{s.orderID}", lowBound=0, upBound=1, cat="Binary")
+            if s.order_type == "parent":
+                x_s[s.key] = pulp.LpVariable(f"x_s_{s.key}", lowBound=0, upBound=1, cat="Binary")
             else:
-                low = float(s.min_acceptance_ratio)
-                low = max(0.0, min(1.0, low))
-                x_var = pulp.LpVariable(f"x_s_{s.orderID}", lowBound=0.0, upBound=1, cat="Continuous")
-                x_s[s.orderID] = x_var
-                if low > 0.0:
-                    z_var = pulp.LpVariable(f"z_s_{s.orderID}", lowBound=0, upBound=1, cat="Binary")
-                    x_s_accept[s.orderID] = z_var
-                    prob += x_var <= z_var, f"min_accept_cap_{s.orderID}"
-                    prob += x_var >= low * z_var, f"min_accept_floor_{s.orderID}"
+                # declared_min is the submitter's min acceptance (unknown -> default 0.0)
+                declared_min = float(s.acceptance)
+                declared_min = max(0.0, min(1.0, declared_min))
+
+                x_var = pulp.LpVariable(f"x_s_{s.key}", lowBound=0.0, upBound=1, cat="Continuous")
+                x_s[s.key] = x_var
+
+                # Always create the conditional binary z so the solver can either accept or reject
+                z_var = pulp.LpVariable(f"z_s_{s.key}", lowBound=0, upBound=1, cat="Binary")
+                x_s_accept[s.key] = z_var
+
+                # Conditional min constraints (if z=0 -> x=0; if z=1 -> x in [declared_min,1])
+                prob += x_var <= z_var, f"min_accept_cap_{s.key}"
+                # Only add lower bound when declared_min > 0; but it is safe to add even if 0
+                if declared_min > 0.0:
+                    prob += x_var >= declared_min * z_var, f"min_accept_floor_{s.key}"
 
         y_parent = {}
-        all_basket_ids = set(s.basketID for s in sell_orders)
+        all_basket_ids = set(s.basket_id for s in sell_orders)
         
         for basket_id in all_basket_ids:
             y_parent[basket_id] = pulp.LpVariable(f"y_parent_{basket_id}", lowBound=0, upBound=1, cat="Binary")
 
         parents_by_basket = defaultdict(list)
         for s in sell_orders:
-            if s.orderType == "parent":
-                parents_by_basket[s.basketID].append(s.orderID)
+            if s.order_type == "parent":
+                parents_by_basket[s.basket_id].append(s.key)
 
         for basket_id, parent_ids in parents_by_basket.items():
             num_parents = len(parent_ids)
@@ -73,13 +93,13 @@ class VolumeMILP:
 
         # Child constraint: child can only be accepted if ALL parent orders in the basket are accepted
         for s in sell_orders:
-            if s.orderType in ("child", "substitutable_child"):
-                prob += x_s[s.orderID] <= y_parent[s.basketID], f"child_requires_all_parents_{s.orderID}"
+            if s.order_type in ("child", "substitutable_child"):
+                prob += x_s[s.key] <= y_parent[s.basket_id], f"child_requires_all_parents_{s.key}"
 
         subs_by_basket = defaultdict(list)
         for s in sell_orders:
-            if s.orderType == "substitutable_child":
-                subs_by_basket[s.basketID].append(s.orderID)
+            if s.order_type == "substitutable_child":
+                subs_by_basket[s.basket_id].append(s.key)
 
         for basket_id, subs in subs_by_basket.items():
             prob += pulp.lpSum([x_s[sid] for sid in subs]) <= 1.0, f"subs_family_basket_{basket_id}"
@@ -113,8 +133,9 @@ class VolumeMILP:
             sell_sum = []
             buy_sum = []
             for s in sell_orders:
-                if s.auctionProduct == p:
-                    sell_sum.append(s.quantity * x_s[s.orderID])
+                for order in s.fragments:
+                    if order.auctionProduct == p:
+                        sell_sum.append(order.quantity * x_s[s.key])
             for b in buy_orders_extended:
                 if b.get("auctionProduct") == p:
                     bid = b.get("orderID")
@@ -149,7 +170,8 @@ class VolumeMILP:
             bid = b.get("orderID", b.get("id", ""))
             welfare_terms.append(b["price"] * b.get("quantity", 0) * x_b[bid])
         for s in sell_orders:
-            welfare_terms.append(- s.price * s.quantity * x_s[s.orderID])
+            for order in s.fragments:
+                welfare_terms.append(- order.price * order.quantity * x_s[s.key])
 
         prob += pulp.lpSum(welfare_terms), "Welfare"
         return prob, x_b, x_s, y_parent, buy_orders_extended

@@ -11,7 +11,7 @@ Basket represents a basket of Sell orders with possible concomitant relationship
 
 ACCEPTANCE_EPS = 1e-6
 
-@dataclass(frozen=True)
+@dataclass
 class SellOrder:
     auctionID: int
     registeredAuctionParticipant: str
@@ -102,7 +102,7 @@ class Basket:
         )
 
 
-@dataclass(frozen=True)
+@dataclass
 class MultiProductOrder:
     key: Tuple
     fragments: List[SellOrder]

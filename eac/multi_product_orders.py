@@ -2,8 +2,7 @@ from typing import List, Dict, Tuple
 from collections import defaultdict
 from eac.models import SellOrder, MultiProductOrder
 
-def group_multi_product_orders(all_sell_orders: List[SellOrder],
-                                x_s_val: Dict[int, float]) -> List[MultiProductOrder]:
+def group_multi_product_orders(all_sell_orders: List[SellOrder])-> List[MultiProductOrder]:
     grouped = defaultdict(list)
     for order in all_sell_orders:
         order_type = order.orderType

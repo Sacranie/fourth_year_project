@@ -1,6 +1,6 @@
 from collections import defaultdict, deque
 from typing import Dict, List, Set
-from eac.models import Basket, SellOrder
+from eac.models import Basket, MultiProductOrder, SellOrder
 
 def build_loop_families(baskets: List[Basket]) -> Dict:
     """
@@ -17,7 +17,7 @@ def build_loop_families(baskets: List[Basket]) -> Dict:
     return adjacency
 
 def validate_unit_capacity(
-    sell_orders: List[SellOrder], 
+    sell_orders: List[MultiProductOrder], 
     unit_capacity_registry: Dict[str, float]
 ) -> List[str]:
     """
@@ -28,8 +28,9 @@ def validate_unit_capacity(
     problems = []
     sells_by_unit_window = defaultdict(list)
     for s in sell_orders:
-        key = (s.auctionUnit, s.deliveryStart, s.deliveryEnd)
-        sells_by_unit_window[key].append(s)
+        for fragment in s.fragments:
+            key = (fragment.auctionUnit, fragment.deliveryStart, fragment.deliveryEnd)
+            sells_by_unit_window[key].append(fragment)
 
     for (unit, delivery_start, delivery_end), sells in sells_by_unit_window.items():
         cap = unit_capacity_registry.get(unit)
