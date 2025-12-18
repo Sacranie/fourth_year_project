@@ -199,7 +199,6 @@ def compare_acceptance_ratios(computed: Dict, api: Dict, order_type: str = "Sell
         
         diff = abs(api_val - comp_val)
         match = diff <= ACCEPTANCE_TOLERANCE
-        match_str = "✓" if match else "✗"
         
         total += 1
         if match:
@@ -212,10 +211,6 @@ def compare_acceptance_ratios(computed: Dict, api: Dict, order_type: str = "Sell
                 'difference': diff
             })
         
-        # Only print mismatches or a sample
-        if not match or total <= 10:
-            print(f"{str(order_id):<20} | {api_val:>13.4f} | {comp_val:>13.4f} | {diff:>13.4f} | {match_str:<10}")
-    
     return matches, total, differences
 
 # --------------------------------
