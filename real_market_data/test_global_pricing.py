@@ -405,7 +405,7 @@ if __name__ == "__main__":
     print(f"  - {len(data['expected_prices'])} product-window pairs with API prices\n")
 
     # Group orders
-    grouped_orders = group_multi_product_orders(data["sell_orders"], data["x_s_observed"])
+    grouped_orders = group_multi_product_orders(data["sell_orders"])
     
     # Organize orders by basket (needed for surplus analysis)
     orders_by_basket = defaultdict(list)
