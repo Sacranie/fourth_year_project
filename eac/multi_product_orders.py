@@ -11,8 +11,9 @@ def group_multi_product_orders(all_sell_orders: List[SellOrder])-> List[MultiPro
         product_marker = order.product_id
         acceptance_ratio = order.min_acceptance_ratio
         status = order.status
+        pricing = order.price
 
-        key = (order.basketID, product_marker, order_entry_time, order_type, delivery_window, acceptance_ratio, status)
+        key = (order.basketID, product_marker, order_entry_time, order_type, delivery_window, acceptance_ratio, status, pricing)
         grouped[key].append(order)
 
     multi_orders: List[MultiProductOrder] = []
