@@ -71,6 +71,7 @@ def process_auction_data(sell_url: str, buy_url: str, auction_id: int, limit: in
             product_id=str(row.get("productID", "")),
             status=status,
             min_acceptance_ratio=acceptance_ratio,
+            actual_acceptance_ratio=acceptance_ratio,
         )
 
         all_sell_orders.append(sell_order)
@@ -251,12 +252,12 @@ if __name__ == "__main__":
         global_lp = GlobalPricingLP(backend)
         computed_prices, problem, status = global_lp.solve(
             all_sell_orders=data["sell_orders"],
-            x_s_val=data["x_s_observed"],
             basket_to_loop=data["basket_to_loop"],
         )
 
         # ===== PRICE COMPARISON =====
         match_pct = accuracy(computed_prices, data["expected_prices"])
+        print(f"Auction ID {AUCTION_ID}: Price match accuracy = {match_pct:.2f}%")
         procurement_cost_API_value = procurement_cost_API(data["sell_orders"], data["expected_prices"])
         print(procurement_cost_API_value)
         procurement_cost_LP = procurement_cost_calculation(computed_prices, data["sell_orders"], data["x_s_observed"])

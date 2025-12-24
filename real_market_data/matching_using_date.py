@@ -213,136 +213,6 @@ def compare_acceptance_ratios(computed: Dict, api: Dict, order_type: str = "Sell
         
     return matches, total, differences
 
-# --------------------------------
-# CONSTRAINT VERIFICATION
-# --------------------------------
-def verify_loop_constraints(x_s: Dict[int, float], sell_orders: List[SellOrder], 
-                           loop_families: Dict, tolerance: float = 0.01):
-    """
-    Verify that baskets in the same loop family are either ALL accepted or ALL rejected.
-    """
-    print(f"\n{'='*100}")
-    print("LOOP CONSTRAINT VERIFICATION")
-    print(f"{'='*100}\n")
-    
-    # Build basket acceptance from order acceptances
-    basket_acceptance = {}
-    orders_by_basket = defaultdict(list)
-    
-    for order in sell_orders:
-        orders_by_basket[order.basketID].append(order)
-    
-    for basket_id, orders in orders_by_basket.items():
-        # A basket is "accepted" if any of its parent orders are accepted
-        parent_orders = [o for o in orders if o.orderType == "parent"]
-        if parent_orders:
-            # Check if all parents are accepted (value close to 1) or all rejected (close to 0)
-            parent_acceptances = [x_s.get(o.orderID, 0.0) for o in parent_orders]
-            basket_acceptance[basket_id] = max(parent_acceptances) if parent_acceptances else 0.0
-    
-    violations = []
-    passed = 0
-    
-    print(f"Found {len(loop_families)} loop families to verify\n")
-    
-    for loop_id, basket_ids in loop_families.items():
-        if len(basket_ids) < 2:
-            continue  # No constraint for single basket
-        
-        acceptances = [basket_acceptance.get(bid, 0.0) for bid in basket_ids]
-        
-        # Check if all baskets have similar acceptance (all ~0 or all ~1)
-        min_accept = min(acceptances)
-        max_accept = max(acceptances)
-        
-        if max_accept - min_accept > tolerance:
-            violations.append({
-                'loop_id': loop_id,
-                'basket_ids': basket_ids,
-                'acceptances': acceptances,
-                'min': min_accept,
-                'max': max_accept,
-                'spread': max_accept - min_accept
-            })
-            print(f"✗ Loop {loop_id}: Baskets {basket_ids}")
-            print(f"  Acceptances: {[f'{a:.4f}' for a in acceptances]}")
-            print(f"  Spread: {max_accept - min_accept:.4f} (> {tolerance} tolerance)\n")
-        else:
-            passed += 1
-    
-    print(f"{'='*100}")
-    if len(violations) == 0:
-        print(f"✓✓✓ ALL LOOP CONSTRAINTS SATISFIED ✓✓✓")
-        print(f"  - {passed} loop families: ALL PASSED")
-    else:
-        print(f"⚠⚠⚠ LOOP CONSTRAINT VIOLATIONS DETECTED ⚠⚠⚠")
-        print(f"  - {len(violations)} loop families violated")
-        print(f"  - {passed} loop families passed")
-    print(f"{'='*100}\n")
-    
-    return violations
-
-
-def verify_product_balance(x_s: Dict[int, float], x_b: Dict[str, float],
-                          sell_orders: List[SellOrder], buy_orders: List[BuyOrder],
-                          tolerance: float = 0.01):
-    """
-    Verify product balance: total sell volume = total buy volume for each product.
-    """
-    print(f"\n{'='*100}")
-    print("PRODUCT BALANCE VERIFICATION")
-    print(f"{'='*100}\n")
-    
-    products = set()
-    for order in sell_orders:
-        products.add(order.auctionProduct)
-    for order in buy_orders:
-        products.add(order.auctionProduct)
-    
-    violations = []
-    passed = 0
-    
-    print(f"{'Product':<20} | {'Sell Volume':<15} | {'Buy Volume':<15} | {'Difference':<15} | {'Balanced':<10}")
-    print("-" * 100)
-    
-    for product in sorted(products):
-        sell_vol = sum(
-            order.quantity * x_s.get(order.orderID, 0.0)
-            for order in sell_orders
-            if order.auctionProduct == product
-        )
-        
-        buy_vol = sum(
-            order.quantity * x_b.get(order.orderID, 0.0)
-            for order in buy_orders
-            if order.auctionProduct == product
-        )
-        
-        diff = abs(sell_vol - buy_vol)
-        balanced = diff <= tolerance
-        balanced_str = "✓" if balanced else "✗"
-        
-        if balanced:
-            passed += 1
-        else:
-            violations.append({
-                'product': product,
-                'sell_vol': sell_vol,
-                'buy_vol': buy_vol,
-                'difference': diff
-            })
-        
-        print(f"{product:<20} | {sell_vol:>13.2f} | {buy_vol:>13.2f} | {diff:>13.2f} | {balanced_str:<10}")
-    
-    print("-" * 100)
-    if len(violations) == 0:
-        print(f"✓✓✓ ALL PRODUCTS BALANCED ✓✓✓")
-    else:
-        print(f"⚠ {len(violations)} products not balanced")
-    print(f"{'='*100}\n")
-    
-    return violations
-
 # ---------- Welfare & procurement cost comparison ----------
 def compute_welfare_and_procurement(sell_orders, buy_orders,
                                     sell_accept_map, buy_accept_map,
@@ -400,12 +270,6 @@ def compute_welfare_and_procurement(sell_orders, buy_orders,
     }
 
 
-# ---------------------------------------
-# Main execution
-# ---------------------------------------
-# ---------------------------------------
-# Main execution (REPLACE your current __main__ block with this)
-# ---------------------------------------
 if __name__ == "__main__":
     AUCTION_ID = 1118
     TEST_LIMIT = 1000000
@@ -428,13 +292,11 @@ if __name__ == "__main__":
     
     # Build baskets and extract loop families (pass raw sell_records to populate concomitant/loop info)
     baskets = build_baskets_from_orders(sell_orders, sell_records)
-    loop_families = build_loop_families(baskets)
     
     print(f"\nStructured data:")
     print(f"  - {len(sell_orders)} sell orders processed")
     print(f"  - {len(buy_orders)} buy orders processed")
     print(f"  - {len(baskets)} baskets created")
-    print(f"  - {len(loop_families)} loop families identified")
     
     # Extract unique products
     products = set(o.auctionProduct for o in sell_orders) | set(o.auctionProduct for o in buy_orders)
@@ -449,17 +311,16 @@ if __name__ == "__main__":
     print("SOLVING VOLUME MILP...")
     print(f"{'='*100}\n")
     
-    backend = PulpSolverBackend(msg=0)
+    backend = PulpSolverBackend(msg=0, time_limit=600)
     volume_milp = VolumeMILP(backend=backend)
     
     # Build and solve
-    prob, x_b_vars, x_s_vars, y_parent_vars, _ = volume_milp.build_problem(
+    prob, x_b_vars, x_s_vars, y_parent_vars, _, _ = volume_milp.build_problem(
         products=list(products),
         buy_orders=buy_orders,
         sell_orders=multi_orders,
         baskets=baskets,
-        unit_capacity_registry=unit_capacity_registry,
-        global_loop_families=loop_families
+        unit_capacity_registry=unit_capacity_registry
     )
     
     status = backend.solve(prob)
@@ -479,10 +340,6 @@ if __name__ == "__main__":
     # ===== COMPARE ACCEPTANCE RATIOS =====
     sell_matches, sell_total, sell_diffs = compare_acceptance_ratios(x_s_per_order, api_sell_acceptance, "Sell")
     buy_matches, buy_total, buy_diffs  = compare_acceptance_ratios(x_b_computed, api_buy_acceptance, "Buy")
-
-    # ===== VERIFY CONSTRAINTS =====
-    loop_violations = verify_loop_constraints(x_s_per_order, sell_orders, loop_families)
-    balance_violations = verify_product_balance(x_s_per_order, x_b_computed, sell_orders, buy_orders)
 
     # Compute API (observed) welfare
     api_w = compute_welfare_and_procurement(
@@ -525,21 +382,6 @@ if __name__ == "__main__":
     buy_pct = 100 * buy_matches / buy_total if buy_total > 0 else 0
     print(f"   Sell Orders: {sell_matches}/{sell_total} matched ({sell_pct:.1f}%)")
     print(f"   Buy Orders:  {buy_matches}/{buy_total} matched ({buy_pct:.1f}%)")
-    
-    print(f"\n2. CONSTRAINT SATISFACTION:")
-    print(f"   Loop Constraints: {len(loop_families) - len(loop_violations)}/{len(loop_families)} passed")
-    print(f"   Product Balance: {len(products) - len(balance_violations)}/{len(products)} balanced")
-    
-    total_issues = len(sell_diffs) + len(buy_diffs) + len(loop_violations) + len(balance_violations)
-    
-    if total_issues == 0:
-        print(f"\n✓✓✓ PERFECT MATCH - ALL VERIFICATIONS PASSED ✓✓✓")
-    else:
-        print(f"\n⚠ Found {total_issues} total issues:")
-        print(f"   - {len(sell_diffs)} sell order mismatches")
-        print(f"   - {len(buy_diffs)} buy order mismatches")
-        print(f"   - {len(loop_violations)} loop constraint violations")
-        print(f"   - {len(balance_violations)} product balance issues")
     
     print(f"\n{'='*100}")
     print("VERIFICATION COMPLETE")

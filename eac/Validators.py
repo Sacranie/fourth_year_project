@@ -11,8 +11,8 @@ def build_loop_families(baskets: List[Basket]) -> Dict:
     """
     adjacency = defaultdict(list)
     for b in baskets:
-        if b.looped_to and b.auctionID:
-            adjacency[(b.looped_to, b.auctionID)].append(b.id)
+        if b.looped_to is not None:
+            adjacency[b.looped_to].append(b.id)
 
     return adjacency
 
