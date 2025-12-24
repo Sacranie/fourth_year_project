@@ -29,6 +29,7 @@ class SellOrder:
     product_id: str = ""
     status: str = ""
     min_acceptance_ratio: float = 0.0
+    actual_acceptance_ratio: float = 0.0  # to be set during processing
 
 
     @staticmethod
@@ -112,8 +113,9 @@ class MultiProductOrder:
     order_type: str
     window: Tuple[str, str]
     canonical_order_id: int
+    actual_acceptance: float = 0.0
 
     # we should have an is accepted here
     @property
     def is_accepted(self) -> bool:
-        return self.acceptance > ACCEPTANCE_EPS
+        return self.actual_acceptance > ACCEPTANCE_EPS

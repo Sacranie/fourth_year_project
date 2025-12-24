@@ -37,7 +37,7 @@ def _accumulate_order_terms(order: MultiProductOrder,
 
     for fragment in order.fragments:
         window = (fragment.deliveryStart, fragment.deliveryEnd)
-        coeff = fragment.quantity * order.acceptance
+        coeff = fragment.quantity * order.actual_acceptance
         if abs(coeff) > COEFF_TOL:
             computed_MCP_pence = price_variables.get((fragment.auctionProduct, window))
             if computed_MCP_pence is None:
@@ -83,7 +83,6 @@ class GlobalPricingLP:
 
     def solve(self, 
               all_sell_orders: List,
-              x_s_val: Dict[int, float],
               basket_to_loop: Dict[int, List[int]] = None,
              ) -> Tuple[Dict[Tuple[str, Tuple], float], pulp.LpProblem, str]:
         basket_to_loop = basket_to_loop or defaultdict(list)
@@ -114,7 +113,7 @@ class GlobalPricingLP:
             if order.is_accepted:
                 for fragment in order.fragments:
                     window = (fragment.deliveryStart, fragment.deliveryEnd)
-                    coeff = fragment.quantity * order.acceptance
+                    coeff = fragment.quantity * order.actual_acceptance
                     if abs(coeff) > COEFF_TOL:
                         var_pence = p_vars.get((fragment.auctionProduct, window))
                         if var_pence is not None:

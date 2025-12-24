@@ -12,8 +12,9 @@ def group_multi_product_orders(all_sell_orders: List[SellOrder])-> List[MultiPro
         acceptance_ratio = order.min_acceptance_ratio
         status = order.status
         pricing = order.price
+        actual_acceptance_ratio = order.actual_acceptance_ratio
 
-        key = (order.basketID, product_marker, order_entry_time, order_type, delivery_window, acceptance_ratio, status, pricing)
+        key = (order.basketID, product_marker, order_entry_time, order_type, delivery_window, acceptance_ratio, status, pricing, actual_acceptance_ratio)
         grouped[key].append(order)
 
     multi_orders: List[MultiProductOrder] = []
@@ -21,7 +22,7 @@ def group_multi_product_orders(all_sell_orders: List[SellOrder])-> List[MultiPro
         if not fragments:
             continue
 
-        acceptance_values = [f.min_acceptance_ratio for f in fragments]
+        acceptance_values = [f.actual_acceptance_ratio for f in fragments]
         
         multi_orders.append(
             create_multi_product_order(key, fragments, acceptance_values)
@@ -47,5 +48,6 @@ def create_multi_product_order(base_key: Tuple,
         order_type= fragments[0].orderType,
         window=window,
         canonical_order_id=canonical_fragment_id,
+        actual_acceptance=canonical_acceptance
     )
 
