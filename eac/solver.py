@@ -1,18 +1,13 @@
-from typing import Any, Optional
 import pulp
 
-"""
-A simple solver backend using PuLP.
-This class provides an interface to solve linear programming problems using the PuLP library.
-This is done using the CBC solver. Coin Branch and Cut Solver.
-"""
-
 class PulpSolverBackend:
-    def __init__(self, msg: int = 0, time_limit: int = 300):
-        self.msg = msg
+    def __init__(self, time_limit=300, msg=0):
         self.time_limit = time_limit
+        self.msg = msg
 
-
-    def solve(self, prob: pulp.LpProblem) -> int:
-        prob.solve(pulp.GUROBI_CMD(msg=self.msg, timeLimit=self.time_limit))
-        return prob.status
+    def solve(self, prob):
+        solver = pulp.GUROBI(
+            msg=self.msg,
+            timeLimit=self.time_limit
+        )
+        return prob.solve(solver)

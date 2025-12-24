@@ -183,7 +183,7 @@ class VolumeMILP:
 
         for iteration in range(1, self.max_retries + 1):
             print(f"Iteration {iteration}: Solving MILP...")
-            prob.solve(pulp.PULP_CBC_CMD(msg=msg))
+            prob.solve(pulp.GUROBI(msg=msg))
             milp_status = pulp.LpStatus[prob.status]
             x_b_val = {bid: float(pulp.value(var) if pulp.value(var) is not None else 0.0) for bid, var in x_b.items()}
             x_s_val = {sid: float(pulp.value(var) if pulp.value(var) is not None else 0.0) for sid, var in x_s.items()}
