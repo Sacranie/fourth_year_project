@@ -84,11 +84,6 @@ def process_sell_orders(sell_records: List[Dict]) -> Tuple[List[SellOrder], Dict
 
         all_sell_orders.append(sell_order)
 
-    print(f"\nSell Orders Status Breakdown:")
-    print(f"  - EXECUTED: {executed_count}")
-    print(f"  - PARTIALLY_EXECUTED: {partial_count}")
-    print(f"  - REJECTED: {rejected_count}")
-    print(f"  - Total: {len(all_sell_orders)}")
     multi_orders = group_multi_product_orders(all_sell_orders)
 
     # We need to now iterate through the multi_orders and adjust the acceptance ratios
@@ -271,118 +266,123 @@ def compute_welfare_and_procurement(sell_orders, buy_orders,
 
 
 if __name__ == "__main__":
-    AUCTION_ID = 1118
-    TEST_LIMIT = 1000000
+    auction_ids = [1112, 1114, 1116, 1118, 1120, 1122, 1124, 1126, 1128, 1130, 1132, 1134, 1136, 1138, 1140, 1142, 1144, 1146, 1148, 1150, 1152, 1154, 1156, 1158, 1189, 1222, 1224, 1226, 1228, 1230, 1232, 1234, 1236, 1255, 1257, 1259, 1261, 1263, 1288, 1290, 1292, 1294, 1296, 1298, 1300]
+    match_percentages = []
+    welfare = []
+    auction_index = 0
+    for auction_id in auction_ids:
+        print(f"\n\n=== Processing Auction ID: {auction_id} ===")
+        AUCTION_ID = auction_id
+        TEST_LIMIT = 1000000
 
-    print(f"\n{'='*100}")
-    print(f"VOLUME MILP VERIFICATION - AUCTION {AUCTION_ID}")
-    print(f"{'='*100}\n")
+        sell_records = load_orders_for_auction(SELL_URL, auction_id=AUCTION_ID, limit=TEST_LIMIT)
+        buy_records = load_orders_for_auction(BUY_URL, auction_id=AUCTION_ID, limit=TEST_LIMIT)
 
-    print("Loading orders from API...")
-    sell_records = load_orders_for_auction(SELL_URL, auction_id=AUCTION_ID, limit=TEST_LIMIT)
-    buy_records = load_orders_for_auction(BUY_URL, auction_id=AUCTION_ID, limit=TEST_LIMIT)
+        # Process orders
+        multi_orders, sell_orders, api_sell_acceptance = process_sell_orders(sell_records)
+        buy_orders, api_buy_acceptance = process_buy_orders(buy_records, auction_id=AUCTION_ID)
+        
+        # Build baskets and extract loop families (pass raw sell_records to populate concomitant/loop info)
+        baskets = build_baskets_from_orders(sell_orders, sell_records)
+        
+        # Extract unique products
+        products = set(o.auctionProduct for o in sell_orders) | set(o.auctionProduct for o in buy_orders)
+
+        # Extract unique units for capacity registry
+        units = set(order.auctionUnit for order in sell_orders)
+        unit_capacity_registry = {unit: 1e9 for unit in units}  # Set very high capacity for each unit
+
+        
+        backend = PulpSolverBackend(msg=0, time_limit=600)
+        volume_milp = VolumeMILP(backend=backend)
+        
+        # Build and solve
+        prob, x_b_vars, x_s_vars, y_parent_vars, _, _ = volume_milp.build_problem(
+            products=list(products),
+            buy_orders=buy_orders,
+            sell_orders=multi_orders,
+            baskets=baskets,
+            unit_capacity_registry=unit_capacity_registry
+        )
+        
+        status = backend.solve(prob)
+        
+        # Extract solution (robust: read directly from the returned variable maps)
+        x_s_computed = {sid: float(pulp.value(var) if pulp.value(var) is not None else 0.0) for sid, var in x_s_vars.items()}
+        x_b_computed = {bid: float(pulp.value(var) if pulp.value(var) is not None else 0.0) for bid, var in x_b_vars.items()}
+
+        # Map multi-order acceptances to individual order IDs for verification
+        x_s_per_order = {}
+        for multi_order in multi_orders:
+            acceptance = x_s_computed.get(multi_order.key, 0.0)
+            for fragment in multi_order.fragments:
+                x_s_per_order[fragment.orderID] = acceptance
+
+        # ===== COMPARE ACCEPTANCE RATIOS =====
+        sell_matches, sell_total, sell_diffs = compare_acceptance_ratios(x_s_per_order, api_sell_acceptance, "Sell")
+        buy_matches, buy_total, buy_diffs  = compare_acceptance_ratios(x_b_computed, api_buy_acceptance, "Buy")
+
+        # Compute API (observed) welfare
+        api_w = compute_welfare_and_procurement(
+            sell_orders=sell_orders,
+            buy_orders=buy_orders,
+            sell_accept_map=api_sell_acceptance,
+            buy_accept_map=api_buy_acceptance,
+            label="API_observed"
+        )
+
+        # Compute MILP (your computed) welfare
+        milp_w = compute_welfare_and_procurement(
+            sell_orders=sell_orders,
+            buy_orders=buy_orders,
+            sell_accept_map=x_s_per_order,   # mapped from multi_orders fragments
+            buy_accept_map=x_b_computed,
+            label="MILP_computed"
+        )
+
+        match_percentage = (sell_matches + buy_matches) / (sell_total + buy_total) * 100.0
+        print(match_percentage)
+        match_percentages.append(match_percentage)
+        welfare.append((api_w, milp_w))
+        auction_index += 1
     
-    print(f"\nRaw records loaded:")
-    print(f"  - {len(sell_records)} sell order records")
-    print(f"  - {len(buy_records)} buy order records")
+    import matplotlib.pyplot as plt
 
-    # Process orders
-    multi_orders, sell_orders, api_sell_acceptance = process_sell_orders(sell_records)
-    buy_orders, api_buy_acceptance = process_buy_orders(buy_records, auction_id=AUCTION_ID)
-    
-    # Build baskets and extract loop families (pass raw sell_records to populate concomitant/loop info)
-    baskets = build_baskets_from_orders(sell_orders, sell_records)
-    
-    print(f"\nStructured data:")
-    print(f"  - {len(sell_orders)} sell orders processed")
-    print(f"  - {len(buy_orders)} buy orders processed")
-    print(f"  - {len(baskets)} baskets created")
-    
-    # Extract unique products
-    products = set(o.auctionProduct for o in sell_orders) | set(o.auctionProduct for o in buy_orders)
-    print(f"  - {len(products)} unique products")
+    # Plot acceptance ratio match percentages
+    plt.figure(figsize=(10, 6))
+    plt.plot(range(len(auction_ids)), match_percentages, marker='o')
+    plt.title('Acceptance Ratio Match Percentages per Auction')
+    plt.xlabel('Auction Index')
+    plt.ylabel('Match Percentage (%)')
+    plt.ylim(0, 100)
+    plt.grid(True)
+    plt.show()
 
-    # Extract unique units for capacity registry
-    units = set(order.auctionUnit for order in sell_orders)
-    unit_capacity_registry = {unit: 1e9 for unit in units}  # Set very high capacity for each unit
+    # Plot percentage welfare change per auction (MILP vs API)
+    welfare_changes = []
 
-    # Run Volume MILP
-    print(f"\n{'='*100}")
-    print("SOLVING VOLUME MILP...")
-    print(f"{'='*100}\n")
-    
-    backend = PulpSolverBackend(msg=0, time_limit=600)
-    volume_milp = VolumeMILP(backend=backend)
-    
-    # Build and solve
-    prob, x_b_vars, x_s_vars, y_parent_vars, _, _ = volume_milp.build_problem(
-        products=list(products),
-        buy_orders=buy_orders,
-        sell_orders=multi_orders,
-        baskets=baskets,
-        unit_capacity_registry=unit_capacity_registry
-    )
-    
-    status = backend.solve(prob)
-    print(f"Solver status: {status}")
-    
-    # Extract solution (robust: read directly from the returned variable maps)
-    x_s_computed = {sid: float(pulp.value(var) if pulp.value(var) is not None else 0.0) for sid, var in x_s_vars.items()}
-    x_b_computed = {bid: float(pulp.value(var) if pulp.value(var) is not None else 0.0) for bid, var in x_b_vars.items()}
+    for api_w, milp_w in welfare:
+        if api_w['welfare'] != 0:
+            change_pct = 100.0 * (milp_w['welfare'] - api_w['welfare']) / api_w['welfare']
+        else:
+            change_pct = 0.0
+        welfare_changes.append(change_pct)
 
-    # Map multi-order acceptances to individual order IDs for verification
-    x_s_per_order = {}
-    for multi_order in multi_orders:
-        acceptance = x_s_computed.get(multi_order.key, 0.0)
-        for fragment in multi_order.fragments:
-            x_s_per_order[fragment.orderID] = acceptance
+    plt.figure(figsize=(10, 6))
+    plt.plot(range(len(auction_ids)), welfare_changes, marker='o')
+    plt.axhline(0, linestyle='--')  # reference line
+    plt.title('Percentage Welfare Change per Auction (MILP vs API)')
+    plt.xlabel('Auction Index')
+    plt.ylabel('Welfare Change (%)')
+    plt.grid(True)
+    plt.show()
 
-    # ===== COMPARE ACCEPTANCE RATIOS =====
-    sell_matches, sell_total, sell_diffs = compare_acceptance_ratios(x_s_per_order, api_sell_acceptance, "Sell")
-    buy_matches, buy_total, buy_diffs  = compare_acceptance_ratios(x_b_computed, api_buy_acceptance, "Buy")
-
-    # Compute API (observed) welfare
-    api_w = compute_welfare_and_procurement(
-        sell_orders=sell_orders,
-        buy_orders=buy_orders,
-        sell_accept_map=api_sell_acceptance,
-        buy_accept_map=api_buy_acceptance,
-        label="API_observed"
-    )
-
-    # Compute MILP (your computed) welfare
-    milp_w = compute_welfare_and_procurement(
-        sell_orders=sell_orders,
-        buy_orders=buy_orders,
-        sell_accept_map=x_s_per_order,   # mapped from multi_orders fragments
-        buy_accept_map=x_b_computed,
-        label="MILP_computed"
-    )
-
-
-    print("\n" + "="*80)
-    print("WELFARE & PROCUREMENT COMPARISON")
-    print("="*80)
-    print(f"{'Metric':<30} | {'API':>15} | {'MILP':>15} | {'Diff (MILP - API)':>15}")
-    print("-"*80)
-    print(f"{'Total buy value':<30} | {api_w['total_buy_value']:15.2f} | {milp_w['total_buy_value']:15.2f} | {milp_w['total_buy_value']-api_w['total_buy_value']:15.2f}")
-    print(f"{'Total sell cost (procurement)':<30} | {api_w['total_sell_cost']:15.2f} | {milp_w['total_sell_cost']:15.2f} | {milp_w['total_sell_cost']-api_w['total_sell_cost']:15.2f}")
-    print(f"{'Welfare (buy - sell)':<30} | {api_w['welfare']:15.2f} | {milp_w['welfare']:15.2f} | {milp_w['welfare']-api_w['welfare']:15.2f}")
-    print("-"*80)
-
-
-
-    # ===== FINAL SUMMARY =====
-    print(f"\n{'='*100}")
-    print("FINAL VERIFICATION SUMMARY")
-    print("=" * 100)
-    
-    print(f"\n1. ACCEPTANCE RATIO MATCHING:")
-    sell_pct = 100 * sell_matches / sell_total if sell_total > 0 else 0
-    buy_pct = 100 * buy_matches / buy_total if buy_total > 0 else 0
-    print(f"   Sell Orders: {sell_matches}/{sell_total} matched ({sell_pct:.1f}%)")
-    print(f"   Buy Orders:  {buy_matches}/{buy_total} matched ({buy_pct:.1f}%)")
-    
-    print(f"\n{'='*100}")
-    print("VERIFICATION COMPLETE")
-    print(f"{'='*100}\n")
+    # Histogram of percentage welfare change
+    plt.figure(figsize=(10, 6))
+    plt.hist(welfare_changes, bins=20, edgecolor='black')
+    plt.axvline(0, linestyle='--')
+    plt.title('Histogram of Percentage Welfare Change (MILP vs API)')
+    plt.xlabel('Welfare Change (%)')
+    plt.ylabel('Frequency')
+    plt.grid(True)
+    plt.show()
