@@ -231,14 +231,6 @@ def procurement_cost_API(all_sell_orders: List[SellOrder], expected_prices: Dict
         total_cost += cost
     return total_cost
 
-def checker(buy_orders, computed_prices):
-    for b in buy_orders:
-        product = b.auctionProduct
-        window = (b.deliveryStart, b.deliveryEnd)
-        comp_price = computed_prices.get((product, window), None)
-        if comp_price is not None and b.paradoxical == False and comp_price > b.price:
-            print(f"Non-paradoxical buy order {b.orderID} has LP price £{comp_price} > bid price £{b.price}") 
-
 # ---------------------------------------
 # Main execution
 # ---------------------------------------
@@ -283,7 +275,7 @@ if __name__ == "__main__":
         auction_index += 1
         if AUCTION_ID == 1114:
             print_price_comparison(computed_prices, data["expected_prices"])
-            checker(data["buy_orders"], computed_prices)
+
 
 
     # Plot a graph of accuracy over auction IDs

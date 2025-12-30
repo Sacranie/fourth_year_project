@@ -70,6 +70,8 @@ class GlobalPricingLP:
     2. PARENT orders: NO individual constraint
     3. NON-LOOPED BASKETS: Total basket surplus >= 0 
     4. LOOP FAMILIES: Total surplus across ALL baskets in family >= 0
+    5. NON-PARADOXICAL BUY ORDERS: Buy order price <= bid price
+    6. PQR and NQR auction products have a minimum MCP of £0.00
     
     Objective: Minimize procurement cost subject to all surplus constraints
     """
