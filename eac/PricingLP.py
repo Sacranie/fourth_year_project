@@ -3,8 +3,7 @@ from collections import defaultdict
 from decimal import Decimal
 import pulp
 from eac.solver import PulpSolverBackend
-from eac.models import SellOrder, MultiProductOrder
-from eac.multi_product_orders import group_multi_product_orders
+from eac.models import SellOrder, MultiProductOrder, BuyOrder
 
 """
 Implements the pricing linear program for the EAC market clearing process.
@@ -82,12 +81,12 @@ class GlobalPricingLP:
         self.price_max = price_max
 
     def solve(self, 
-              all_sell_orders: List,
+              multi_orders: List[MultiProductOrder],
+              buy_orders: List[BuyOrder],
               basket_to_loop: Dict[int, List[int]] = None,
              ) -> Tuple[Dict[Tuple[str, Tuple], float], pulp.LpProblem, str]:
         basket_to_loop = basket_to_loop or defaultdict(list)
 
-        multi_orders = group_multi_product_orders(all_sell_orders)
         active_product_windows = _collect_active_pairs(multi_orders)
 
         # Use global price bounds for all active product-window pairs (per NESO spec)
@@ -162,6 +161,22 @@ class GlobalPricingLP:
                     )
                 loop_expr = pulp.lpSum(loop_terms) + loop_constant
                 price_prob += loop_expr >= 0.0, f"loop_family_{loop_id}"
+        
+        # Constraint 4: Non-paradoxical buy orders
+        for b in buy_orders:
+            if not b.paradoxical and b.quantity > 0:
+                window = (b.deliveryStart, b.deliveryEnd)
+                var_pence = p_vars.get((b.auctionProduct, window))
+                if var_pence is not None:
+                    buy_price_expr = var_pence / 100.0
+                    price_prob += buy_price_expr <= b.price, f"non_paradoxical_buy_{b.orderID}"
+        
+        # Constraint 5: PQR and NQR auction products have a minimum MCP of £0.00
+        for product, window in active_product_windows:
+            if product == "PQR" or product == "NQR":
+                var_pence = p_vars.get((product, window))
+                if var_pence is not None:
+                    price_prob += var_pence >= 0, f"min_price_pqr_nqr_{product}_{window[0]}_{window[1]}"
 
         status = self.backend.solve(price_prob)
         status_str = pulp.LpStatus[status]

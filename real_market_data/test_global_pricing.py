@@ -5,8 +5,10 @@ import json
 import urllib.request
 import urllib.parse
 
-from eac.models import SellOrder
-from eac.PricingLP import GlobalPricingLP, group_multi_product_orders, ROUNDING_TOL_DECIMAL
+from matching_using_date import process_buy_orders
+from eac.multi_product_orders import group_multi_product_orders
+from eac.models import SellOrder, BuyOrder
+from eac.PricingLP import GlobalPricingLP, ROUNDING_TOL_DECIMAL
 from eac.solver import PulpSolverBackend
 
 # NESO API endpoints
@@ -34,6 +36,7 @@ def load_orders_for_auction(base_url: str, auction_id: int, limit: int) -> List[
 def process_auction_data(sell_url: str, buy_url: str, auction_id: int, limit: int):
     """Load sell orders and build structured objects for pricing LP."""
     sell_records = load_orders_for_auction(sell_url, auction_id=auction_id, limit=limit)
+    buy_records = load_orders_for_auction(buy_url, auction_id=auction_id, limit=limit)
     all_sell_orders: List[SellOrder] = []
     x_s_observed: Dict[int, float] = {}
     expected_prices: Dict[Tuple[str, Tuple[str, str]], float] = {}
@@ -89,12 +92,15 @@ def process_auction_data(sell_url: str, buy_url: str, auction_id: int, limit: in
         
         if looped_basket_id is not None and basket_id not in basket_to_loop:
             basket_to_loop[looped_basket_id].append(basket_id)
+    
+    all_buy_orders, _ = process_buy_orders(buy_records, auction_id=auction_id)
 
     if rejected_orders:
         print(f"Skipped {rejected_orders} rejected orders")
 
     return {
         "sell_orders": all_sell_orders,
+        "buy_orders": all_buy_orders,
         "x_s_observed": x_s_observed,
         "expected_prices": expected_prices,
         "basket_to_loop": basket_to_loop,
@@ -224,6 +230,15 @@ def procurement_cost_API(all_sell_orders: List[SellOrder], expected_prices: Dict
         cost = acceptance_ratio * quantity * price
         total_cost += cost
     return total_cost
+
+def checker(buy_orders, computed_prices):
+    for b in buy_orders:
+        product = b.auctionProduct
+        window = (b.deliveryStart, b.deliveryEnd)
+        comp_price = computed_prices.get((product, window), None)
+        if comp_price is not None and b.paradoxical == False and comp_price > b.price:
+            print(f"Non-paradoxical buy order {b.orderID} has LP price £{comp_price} > bid price £{b.price}") 
+
 # ---------------------------------------
 # Main execution
 # ---------------------------------------
@@ -251,7 +266,8 @@ if __name__ == "__main__":
         backend = PulpSolverBackend(msg=0)
         global_lp = GlobalPricingLP(backend)
         computed_prices, problem, status = global_lp.solve(
-            all_sell_orders=data["sell_orders"],
+            multi_orders=grouped_orders,
+            buy_orders=data["buy_orders"],
             basket_to_loop=data["basket_to_loop"],
         )
 
@@ -265,8 +281,9 @@ if __name__ == "__main__":
         match_percentages.append((auction_index, match_pct))
         procurement_costs.append((auction_index, procurement_cost_API_value, procurement_cost_LP))
         auction_index += 1
-        if AUCTION_ID == 1146:
+        if AUCTION_ID == 1114:
             print_price_comparison(computed_prices, data["expected_prices"])
+            checker(data["buy_orders"], computed_prices)
 
 
     # Plot a graph of accuracy over auction IDs
