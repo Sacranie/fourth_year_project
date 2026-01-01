@@ -13,7 +13,7 @@ ACCEPTANCE_EPS = 1e-9
 COEFF_TOL = 1e-12
 ROUNDING_TOL_DECIMAL = Decimal("0.000001")
 PRICE_MIN = -10.0
-PRICE_MAX = 50.0
+PRICE_MAX = 35.0  # Based on analysis of real market data - max MCP observed is ~£32.70
 
 
 def _collect_active_pairs(multi_orders: Iterable[MultiProductOrder]) -> Set[Tuple[str, Tuple[str, str]]]:
@@ -42,7 +42,8 @@ def _accumulate_order_terms(order: MultiProductOrder,
             if computed_MCP_pence is None:
                 raise KeyError(f"Missing price variable for active pair {(fragment.auctionProduct, window)}")
             terms.append((computed_MCP_pence * coeff) / 100.0)
-            constant -= order.price_limit * coeff
+            # Use each fragment's own price, not order.price_limit
+            constant -= fragment.price * coeff
 
     return terms, constant
 
@@ -86,8 +87,10 @@ class GlobalPricingLP:
               multi_orders: List[MultiProductOrder],
               buy_orders: List[BuyOrder],
               basket_to_loop: Dict[int, List[int]] = None,
+              buy_acceptance: Dict[str, float] = None,
              ) -> Tuple[Dict[Tuple[str, Tuple], float], pulp.LpProblem, str]:
         basket_to_loop = basket_to_loop or defaultdict(list)
+        buy_acceptance = buy_acceptance or {}
 
         active_product_windows = _collect_active_pairs(multi_orders)
 
@@ -164,9 +167,13 @@ class GlobalPricingLP:
                 loop_expr = pulp.lpSum(loop_terms) + loop_constant
                 price_prob += loop_expr >= 0.0, f"loop_family_{loop_id}"
         
-        # Constraint 4: Non-paradoxical buy orders
+        # Constraint 4: Non-paradoxical buy orders (only if accepted)
         for b in buy_orders:
-            if not b.paradoxical and b.quantity > 0:
+            order_id = b.orderID
+            # Only apply constraint if order is accepted (acceptance > 0)
+            # If buy_acceptance is empty, assume all orders are accepted (backward compatibility)
+            acceptance = buy_acceptance.get(order_id, 1.0) if buy_acceptance else 1.0
+            if not b.paradoxical and b.quantity > 0 and acceptance > ACCEPTANCE_EPS:
                 window = (b.deliveryStart, b.deliveryEnd)
                 var_pence = p_vars.get((b.auctionProduct, window))
                 if var_pence is not None:

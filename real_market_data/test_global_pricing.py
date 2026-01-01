@@ -272,9 +272,10 @@ if __name__ == "__main__":
         print(procurement_cost_LP)
         match_percentages.append((auction_index, match_pct))
         procurement_costs.append((auction_index, procurement_cost_API_value, procurement_cost_LP))
-        auction_index += 1
-        if AUCTION_ID == 1114:
+        
+        if auction_index == 5:
             print_price_comparison(computed_prices, data["expected_prices"])
+        auction_index += 1
 
 
 
