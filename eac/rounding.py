@@ -18,7 +18,7 @@ def rounding_and_residual_distribution(products, mcp_prices_val_unrounded, x_s_v
     """
 
     # Round the market clearing prices up to nearest penny
-    prices_rounded = {p: round_price_up_to_cent(mcp_prices_val_unrounded[p]) for p in products}
+    prices_rounded = {k: round_price_up_to_cent(v) for k, v in mcp_prices_val_unrounded.items()}
 
     # How much of each sell order is accepted unrounded
     accepted_unrounded_sell = {}
@@ -54,43 +54,47 @@ def rounding_and_residual_distribution(products, mcp_prices_val_unrounded, x_s_v
     
     accepted_buy_rounded = {}
     for b in buy_orders:
-        ratio = float(x_b_val.get(b.orderID, 0.0) or 0.0)
+        bid = b.get("orderID", b.get("id", 0))
+        ratio = float(x_b_val.get(bid, 0.0) or 0.0)
         # BuyOrder has field 'quantity'
-        unrounded = b.quantity * ratio
-        accepted_buy_rounded[b.orderID] = int(round(unrounded + 1e-9))
+        unrounded = b.get("quantity", 0.0) * ratio
+        accepted_buy_rounded[bid] = int(round(unrounded + 1e-9))
 
     buys_by_product = defaultdict(list)
     for b in buy_orders:
-        buys_by_product[b.auctionProduct].append(b)
+        prod = b.get("auctionProduct", "")
+        buys_by_product[prod].append(b)
 
     # Now adjust buy rounded volumes to fix residuals per product
     for p in products:
-        rounded_buys_sum = sum(accepted_buy_rounded[b.orderID] for b in buys_by_product.get(p, []))
+        rounded_buys_sum = sum(accepted_buy_rounded[bid] for b in buys_by_product.get(p, []) for bid in [b.get("orderID", b.get("id", 0))])
         rounded_sells_sum = total_rounded_sells_by_product.get(p, 0)
         residual = rounded_buys_sum - rounded_sells_sum  # positive -> too many buys
         if residual == 0:
             continue
         if rounded_buys_sum < rounded_sells_sum:
             need = rounded_sells_sum - rounded_buys_sum
-            candidates = sorted(buys_by_product.get(p, []), key=lambda b: (b.price, b.orderID))
+            candidates = sorted(buys_by_product.get(p, []), key=lambda b: (b.get("price", 0), b.get("orderID", b.get("id", 0))))
             if not candidates:
                 continue
             idx = 0
             while need > 0:
                 b = candidates[idx % len(candidates)]
-                accepted_buy_rounded[b.orderID] += 1
+                bid = b.get("orderID", b.get("id", 0))
+                accepted_buy_rounded[bid] += 1
                 need -= 1
                 idx += 1
         else:
             need = rounded_buys_sum - rounded_sells_sum
-            candidates = sorted(buys_by_product.get(p, []), key=lambda b: (-b.price, b.orderID))
+            candidates = sorted(buys_by_product.get(p, []), key=lambda b: (-b.get("price", 0), b.get("orderID", b.get("id", 0))))
             if not candidates:
                 continue
             idx = 0
             while need > 0:
                 b = candidates[idx % len(candidates)]
-                if accepted_buy_rounded[b.orderID] > 0:
-                    accepted_buy_rounded[b.orderID] -= 1
+                bid = b.get("orderID", b.get("id", 0))
+                if accepted_buy_rounded[bid] > 0:
+                    accepted_buy_rounded[bid] -= 1
                     need -= 1
                 idx += 1
 

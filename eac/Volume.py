@@ -49,7 +49,6 @@ class VolumeMILP:
                 prob += x_b[bid] >= declared_min * z_var, f"buy_min_floor_{bid}"
 
         x_s = {}
-        infeasible_price_count = 0
         for s in sell_orders:
             # Check if any fragment has a price limit above PRICE_MAX - if so, force rejection
             max_fragment_price = max(frag.price for frag in s.fragments)
@@ -59,7 +58,6 @@ class VolumeMILP:
                 x_s[s.key] = pulp.LpVariable(f"x_s_{s.key}", lowBound=0, upBound=1, cat="Binary")
                 if order_infeasible:
                     prob += x_s[s.key] == 0, f"price_infeasible_{s.key}"
-                    infeasible_price_count += 1
             else:
                 declared_min = s.acceptance
                 declared_min = max(0.0, min(1.0, declared_min))
@@ -68,15 +66,11 @@ class VolumeMILP:
                 
                 if order_infeasible:
                     prob += x_var == 0, f"price_infeasible_{s.key}"
-                    infeasible_price_count += 1
                 else:
                     z_var = pulp.LpVariable(f"z_s_{s.key}", lowBound=0, upBound=1, cat="Binary")
                     prob += x_var <= z_var, f"min_accept_cap_{s.key}"
                     if declared_min > 0.0:
                         prob += x_var >= declared_min * z_var, f"min_accept_floor_{s.key}"
-        
-        if infeasible_price_count > 0:
-            print(f"DEBUG: Forced {infeasible_price_count} orders to rejection due to price > PRICE_MAX ({PRICE_MAX})")
 
         y_parent = {}
         all_basket_ids = set(s.basket_id for s in sell_orders)
@@ -154,7 +148,6 @@ class VolumeMILP:
         # A non-paradoxical buy order with price P_b sets a ceiling on the price for (product, window)
         # A sell order with price P_s sets a floor on the price for (product, window)
         # If P_s > P_b, both cannot be accepted together
-        pricing_conflict_count = 0
         for b in buy_orders_extended:
             if b.get("paradoxical", False):
                 continue  # Paradoxical buy orders don't constrain prices
@@ -172,10 +165,7 @@ class VolumeMILP:
                         # Conflict: sell order needs price >= frag.price, but buy caps at b_price
                         # At most one of them can be accepted
                         prob += x_s[s.key] + x_b[bid] <= 1, f"pricing_conflict_{s.key}_{bid}_{b_product}"
-                        pricing_conflict_count += 1
-        
-        if pricing_conflict_count > 0:
-            print(f"DEBUG: Added {pricing_conflict_count} pricing conflict constraints")
+
 
         for fam_id, members in (substitutability_families_buy or {}).items():
             prob += pulp.lpSum([x_b[bid] for bid in members]) <= 1.0, f"buy_subs_family_{fam_id}"
@@ -210,17 +200,6 @@ class VolumeMILP:
 
         prob += pulp.lpSum(welfare_terms), "Welfare"
         return prob, x_b, x_s, y_parent, buy_orders_extended, global_loop_families
-    
-    def _apply_parent_fixes(self, prob, y_parent, fixed_parents: Dict[int, int]):
-        """
-        Impose basket parent acceptance fixes for a Branch & Bound node.
-        """
-        for basket_id, val in fixed_parents.items():
-            if basket_id in y_parent:
-                prob += (
-                    y_parent[basket_id] == val,
-                    f"fix_parent_{basket_id}_{val}"
-                )
 
     def solve_with_pricing_loop(
         self,
@@ -287,5 +266,3 @@ class VolumeMILP:
             "final": False,
             "reason": "No pricing-feasible solution found after welfare relaxation"
         }
-
-
