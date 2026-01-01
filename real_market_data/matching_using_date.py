@@ -117,7 +117,7 @@ def process_buy_orders(buy_records: List[Dict], auction_id: Optional[int] = None
         api_acceptance_ratios[order_id] = api_acceptance
 
         raw = row.get("paradoxicallyAcceptanceAllowed", "false")
-        paradoxical = (raw == "true")
+        paradoxical = (str(raw).lower() == "true")
 
         buy_order = BuyOrder(
             auctionID=auction_id,
@@ -127,7 +127,7 @@ def process_buy_orders(buy_records: List[Dict], auction_id: Optional[int] = None
             deliveryStart=str(row.get("deliveryStart", "") or ""),
             deliveryEnd=str(row.get("deliveryEnd", "") or ""),
             quantity=float(row.get("quantity", 0.0) or 0.0),
-            price=float(row.get("priceLimit", row.get("price", 0.0) or 0.0)),
+            price=float(row.get("price", 0.0) or 0.0),
             paradoxical=paradoxical,
             min_acceptance_ratio=min_acceptance,
         )
@@ -282,6 +282,8 @@ if __name__ == "__main__":
         multi_orders, sell_orders, api_sell_acceptance = process_sell_orders(sell_records)
         buy_orders, api_buy_acceptance = process_buy_orders(buy_records, auction_id=AUCTION_ID)
         
+        print(f"DEBUG: {len(sell_orders)} flat sell orders, {len(multi_orders)} multi_orders")
+        
         # Build baskets and extract loop families (pass raw sell_records to populate concomitant/loop info)
         baskets = build_baskets_from_orders(sell_orders, sell_records)
         
@@ -297,7 +299,7 @@ if __name__ == "__main__":
         volume_milp = VolumeMILP(backend=backend)
         
         # Build and solve
-        prob, x_b_vars, x_s_vars, y_parent_vars, _, _ = volume_milp.build_problem(
+        data = volume_milp.solve_with_pricing_loop(
             products=list(products),
             buy_orders=buy_orders,
             sell_orders=multi_orders,
@@ -305,11 +307,13 @@ if __name__ == "__main__":
             unit_capacity_registry=unit_capacity_registry
         )
         
-        status = backend.solve(prob)
+        if not data["final"]:
+            print(f"Auction {auction_id} failed to find valid clearing: {data.get('reason', 'Unknown')}")
+            continue  # Skip to next auction
         
-        # Extract solution (robust: read directly from the returned variable maps)
-        x_s_computed = {sid: float(pulp.value(var) if pulp.value(var) is not None else 0.0) for sid, var in x_s_vars.items()}
-        x_b_computed = {bid: float(pulp.value(var) if pulp.value(var) is not None else 0.0) for bid, var in x_b_vars.items()}
+        # Extract solution from the returned dict
+        x_s_computed = data["x_s"]
+        x_b_computed = data["x_b"]
 
         # Map multi-order acceptances to individual order IDs for verification
         x_s_per_order = {}
