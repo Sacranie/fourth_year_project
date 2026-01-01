@@ -282,8 +282,6 @@ if __name__ == "__main__":
         multi_orders, sell_orders, api_sell_acceptance = process_sell_orders(sell_records)
         buy_orders, api_buy_acceptance = process_buy_orders(buy_records, auction_id=AUCTION_ID)
         
-        print(f"DEBUG: {len(sell_orders)} flat sell orders, {len(multi_orders)} multi_orders")
-        
         # Build baskets and extract loop families (pass raw sell_records to populate concomitant/loop info)
         baskets = build_baskets_from_orders(sell_orders, sell_records)
         
