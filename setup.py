@@ -1,13 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="eac",
+    name="fourth_year_project",
     version="0.1",
-    packages=find_packages(),
-)
-
-setup(
-    name="battery",
-    version="0.1",
-    packages=find_packages(),
+    packages=["eac", "battery"],
 )

@@ -40,6 +40,7 @@ class VolumeMILP:
 
         for b in buy_orders_extended:
             declared_min = b.get("min_acceptance_ratio", 0.0)
+            declared_min = float(declared_min) if declared_min is not None else 0.0
             declared_min = max(0.0, min(1.0, declared_min))
             bid = b.get("orderID", b.get("id", ""))
             x_b[bid] = pulp.LpVariable(f"x_b_{bid}", lowBound=0.0, upBound=1.0, cat="Continuous")

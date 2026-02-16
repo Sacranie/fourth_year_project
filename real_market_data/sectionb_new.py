@@ -5,6 +5,10 @@ import json
 import urllib.request
 import urllib.parse
 import pulp
+import matplotlib.pyplot as plt
+import numpy as np
+import pickle
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from eac.models import SellOrder, BuyOrder, Basket
 from eac.multi_product_orders import group_multi_product_orders
@@ -176,196 +180,232 @@ def build_baskets_from_orders(sell_orders: List[SellOrder], raw_records: List[Di
     return list(baskets.values())
 
 
+def process_single_auction(auction_id: int, auction_unit: str, alpha_vals: List[float], beta_vals: List[float]) -> Tuple[set, dict]:
+    """
+    Process a single auction and return the products and price differences.
+    This function is designed to be run in parallel.
+    
+    Returns:
+        (products_set, price_diffs_dict) for this auction
+    """
+    print(f"\n\n=== Processing Auction ID: {auction_id} ===")
+    TEST_LIMIT = 1000000
+    
+    # Local price_diffs for this auction
+    local_price_diffs = defaultdict(list)
+    local_products = set()
+
+    sell_records = load_orders_for_auction(SELL_URL, auction_id=auction_id, limit=TEST_LIMIT)
+    buy_records = load_orders_for_auction(BUY_URL, auction_id=auction_id, limit=TEST_LIMIT)
+
+    # Process orders
+    multi_orders, sell_orders, changing_sell_orders = process_sell_orders(sell_records, auction_unit=auction_unit)
+    buy_orders = process_buy_orders(buy_records, auction_id=auction_id)
+
+    if not changing_sell_orders:
+        print(f"No changing sell orders for auction unit {auction_unit} in Auction {auction_id}, skipping.")
+        return local_products, dict(local_price_diffs)
+    
+    # Build baskets and extract loop families
+    baskets = build_baskets_from_orders(sell_orders, sell_records)
+    
+    # Extract unique products
+    products = set(o.auctionProduct for o in sell_orders) | set(o.auctionProduct for o in buy_orders)
+    local_products.update(products)
+
+    products_sold = set(o.auctionProduct for o in changing_sell_orders)
+
+    # Extract unique units for capacity registry
+    units = set(order.auctionUnit for order in sell_orders)
+    unit_capacity_registry = {unit: 1e9 for unit in units}
+    unit_capacity_registry[auction_unit] = 1e9
+
+    # Store original values to avoid compounding modifications
+    original_values = [(float(order.quantity), float(order.price)) for order in changing_sell_orders]
+
+    backend = PulpSolverBackend(msg=0, time_limit=600)
+    volume_milp = VolumeMILP(backend=backend)
+
+    original_mcp = {}
+
+    # Iterate through alpha/beta combinations
+    for a in alpha_vals:
+        for b in beta_vals:
+            print(f"[Auction {auction_id}] Testing parameters: alpha={a}, beta={b}")
+
+            # Apply multipliers to changing orders
+            for i, order in enumerate(changing_sell_orders):
+                order.quantity = original_values[i][0] * a
+                order.price = original_values[i][1] * b
+            
+            multi_changing_sell_order = group_multi_product_orders(changing_sell_orders)
+            for orders in multi_changing_sell_order:
+                if not orders.is_accepted:
+                    orders.acceptance = 1.0
+            
+            # Combine with fixed orders
+            test_multi_orders = multi_orders + multi_changing_sell_order
+            changing_baskets = build_baskets_from_orders(changing_sell_orders, sell_records)
+            test_baskets = baskets + changing_baskets
+    
+            # Solve
+            data = volume_milp.solve_with_pricing_loop(
+                products=list(products),
+                buy_orders=buy_orders,
+                sell_orders=test_multi_orders,
+                baskets=test_baskets,
+                unit_capacity_registry=unit_capacity_registry
+            )
+
+            if not data["final"]:
+                print(f"Auction {auction_id} failed to find valid clearing for alpha={a}, beta={b}")
+                continue
+
+            prices_unrounded = data["prices_unrounded"]
+
+            # Store baseline MCP at (1,1)
+            if a == 1 and b == 1:
+                original_mcp = dict(prices_unrounded)
+                print(f"[Auction {auction_id}] Baseline MCP captured for {len(original_mcp)} product-windows")
+                continue
+
+            # Calculate absolute price difference for other combinations
+            for key, mcp in prices_unrounded.items():
+                product = key[0]
+                is_accepted_product = any(
+                    multi.is_accepted and any(frag.auctionProduct == product for frag in multi.fragments)
+                    for multi in multi_changing_sell_order
+                )
+                if product in products_sold and is_accepted_product:
+                    original_price = original_mcp.get(key, 0.0)
+                    price_diff = mcp - original_price
+                    local_price_diffs[(product, a, b)].append(price_diff)
+    
+    return local_products, dict(local_price_diffs)
+
+
 if __name__ == "__main__":
     auction_ids = [1112, 1114, 1116, 1118, 1120, 1122, 1124, 1126, 1128, 1130, 1132, 1134, 1136, 1138, 1140, 1142, 1144, 1146, 1148, 1150, 1152, 1154, 1156, 1158, 1189, 1222, 1224, 1226, 1228, 1230, 1232, 1234, 1236, 1255, 1257, 1259, 1261, 1263, 1288, 1290, 1292, 1294, 1296, 1298, 1300]
-    welfare = []
     AUCTION_UNIT = "GSET-02"  # The auction unit we want to vary
-    cumulative_revenue = [0.0]
-    for auction_index, auction_id in enumerate(auction_ids):
-        print(f"\n\n=== Processing Auction ID: {auction_id} ===")
-        AUCTION_ID = auction_id
-        TEST_LIMIT = 1000000
-
-        sell_records = load_orders_for_auction(SELL_URL, auction_id=AUCTION_ID, limit=TEST_LIMIT)
-        buy_records = load_orders_for_auction(BUY_URL, auction_id=AUCTION_ID, limit=TEST_LIMIT)
-
-        # Process orders
-        multi_orders, sell_orders, changing_sell_orders = process_sell_orders(sell_records, auction_unit=AUCTION_UNIT)
-        buy_orders = process_buy_orders(buy_records, auction_id=AUCTION_ID)
-        
-        # Build baskets and extract loop families (pass raw sell_records to populate concomitant/loop info)
-        baskets = build_baskets_from_orders(sell_orders, sell_records)
-        
-        # Extract unique products
-        products = set(o.auctionProduct for o in sell_orders) | set(o.auctionProduct for o in buy_orders)
-
-        # Extract unique units for capacity registry
-        units = set(order.auctionUnit for order in sell_orders)
-        unit_capacity_registry = {unit: 1e9 for unit in units}  # Set very high capacity for each unit
-
-        # add unit capacity for the auction unit we are testing
-        unit_capacity_registry[AUCTION_UNIT] = 1e9  # Set very high capacity for the test unit
-
-        alpha = [1, 1.25, 1.5, 2, 3, 4]
-        beta  = [1, 1.1, 1.2, 1.4, 1.6, 2]
-
-        # Store original values to avoid compounding modifications
-        original_values = []
-        for order in changing_sell_orders:
-            order.quantity = float(order.quantity)
-            order.price = float(order.price)
-            original_values.append((order.quantity, order.price))
-
-        best_revenue = 0
-        best_alpha, best_beta = 1, 1
-        results = []  # Store all (alpha, beta, revenue) tuples
-        
-        backend = PulpSolverBackend(msg=0, time_limit=600)
-        volume_milp = VolumeMILP(backend=backend)
-
-        # Iterate through alpha/beta combinations to find optimal pricing
-        for a in alpha:
-            for b in beta:
-                print(f"\nTesting parameters: alpha={a}, beta={b}")
-
-
-                # Reset to original values then apply multipliers
-                for i, order in enumerate(changing_sell_orders):
-                    order.quantity = original_values[i][0] * a
-                    order.price = original_values[i][1] * b
-                multi_changing_sell_order = group_multi_product_orders(changing_sell_orders)
-                
-                # Apply the same acceptance treatment as fixed orders
-                for orders in multi_changing_sell_order:
-                    if not orders.is_accepted:
-                        orders.acceptance = 1.0
-                
-                multi_orders.extend(multi_changing_sell_order)
-
-                changing_baskets = build_baskets_from_orders(changing_sell_orders, sell_records)
-
-                baskets.extend(changing_baskets)
-        
-                # Build and solve
-                data = volume_milp.solve_with_pricing_loop(
-                    products=list(products),
-                    buy_orders=buy_orders,
-                    sell_orders=multi_orders,
-                    baskets=baskets,
-                    unit_capacity_registry=unit_capacity_registry
-                )
-
-        
-                if not data["final"]:
-                    print(f"Auction {auction_id} failed to find valid clearing: {data.get('reason', 'Unknown')}")
-                    # Still need to remove the orders we added before continuing
-                    multi_orders = multi_orders[:-len(multi_changing_sell_order)]
-                    baskets = baskets[:-len(changing_baskets)]
-                    continue  # Skip to next alpha/beta combination
-                
-                # We would now need to go through that specific unit and find out the total revenue which is calcuated by 
-                # summing up the accepted quantity multiplied by the market clearing price for each order in the auction unit we have chosen
-                revenue = 0
-
-                # Calculate profit for the new orders
-                x_s_computed = data["x_s"]
-                prices_unrounded = data["prices_unrounded"]
-
-                if multi_changing_sell_order:
-                    sample_key = multi_changing_sell_order[0].key
-                    sample_window = multi_changing_sell_order[0].window
-
-                for multi in multi_changing_sell_order:
-                    acceptance = x_s_computed.get(multi.key, 0.0)
-                    if acceptance > 0:
-                        for frag in multi.fragments:
-                            # Get MCP for this product in this window
-                            # prices_unrounded keys are (product, window) tuples
-                            mcp = prices_unrounded.get((frag.auctionProduct, multi.window), 0.0)
-                            # Revenue = MCP * accepted_quantity
-                            revenue += acceptance * frag.quantity * mcp
-                print(f"  Revenue for changing orders at alpha={a}, beta={b}: {revenue}")
-                results.append((a, b, revenue))
-                if revenue > best_revenue:
-                    best_revenue = revenue
-                    best_alpha, best_beta = a, b
-                
-                multi_orders = multi_orders[:-len(multi_changing_sell_order)]
-
-                baskets = baskets[:-len(changing_baskets)]
-
-        if auction_index == 0:
-            # I want to plot the alpha and betas and revenues for the first auction only
-            import matplotlib.pyplot as plt
-            alphas = [r[0] for r in results]
-            betas  = [r[1] for r in results]
-            revenues = [r[2] for r in results]
-            fig = plt.figure(figsize=(10, 7))
-            ax = fig.add_subplot(111, projection='3d')
-            ax.scatter(alphas, betas, revenues, c=revenues, cmap='viridis', depthshade=True)
-            ax.set_xlabel('Alpha')
-            ax.set_ylabel('Beta')
-            ax.set_zlabel('Revenue')
-            ax.set_title('Revenue vs Alpha and Beta for First Auction')
-            plt.show()
-        
-        print(f"Maximum Revenue for Auction {auction_id} at unit {AUCTION_UNIT}: {best_revenue}")
-        print(f"  Best parameters: alpha={best_alpha}, beta={best_beta}")
-        welfare.append({"auction_id": auction_id, "max_revenue": best_revenue, "best_alpha": best_alpha, "best_beta": best_beta, "all_results": results})
-        cumulative_revenue.append(best_revenue + cumulative_revenue[-1])
     
-    # We want to plot a cumulative revenue graph here
-    print(f"\n\nCumulative Revenue across all auctions at unit {AUCTION_UNIT}: {cumulative_revenue}")
-    import matplotlib.pyplot as plt
-    plt.plot(range(len(cumulative_revenue)), cumulative_revenue, marker='o')
-    plt.title(f"Cumulative Revenue across Auctions at Unit {AUCTION_UNIT}")
-    plt.xlabel("Number of Auctions Processed")
-    plt.ylabel("Cumulative Revenue")
-    plt.grid(True)
-    plt.savefig(f"cumulative_revenue_{AUCTION_UNIT}.png")
-    plt.show()
-
-    import numpy as np
-    from matplotlib.gridspec import GridSpec
-    best_alpha = np.array([w["best_alpha"] for w in welfare])
-    best_beta  = np.array([w["best_beta"]  for w in welfare])
-    fig = plt.figure(figsize=(8, 8))
-    gs = GridSpec(4, 4, figure=fig)
-
-    ax_joint = fig.add_subplot(gs[1:4, 0:3])
-    ax_xhist = fig.add_subplot(gs[0, 0:3], sharex=ax_joint)
-    ax_yhist = fig.add_subplot(gs[1:4, 3], sharey=ax_joint)
-
-    # --- Joint scatter ---
-    ax_joint.scatter(best_alpha, best_beta, alpha=0.6)
-    ax_joint.set_xlabel(r"Best $\alpha$")
-    ax_joint.set_ylabel(r"Best $\beta$")
-    ax_joint.grid(True)
-
-    alpha_med = np.median(best_alpha)
-    beta_med  = np.median(best_beta)
-
-    ax_joint.scatter(alpha_med, beta_med, color="red", marker="x", s=100, label="Median")
-    ax_joint.legend()
-
-
-    # --- Marginal histograms ---
-    ax_xhist.hist(best_alpha, bins=6, edgecolor="black")
-    ax_yhist.hist(best_beta, bins=6, orientation="horizontal", edgecolor="black")
-
-    # Remove tick labels on marginal plots
-    plt.setp(ax_xhist.get_xticklabels(), visible=False)
-    plt.setp(ax_yhist.get_yticklabels(), visible=False)
-
-    ax_xhist.set_ylabel("Count")
-    ax_yhist.set_xlabel("Count")
-
+    alpha = [1, 1.5, 2, 2.5, 3.0, 3.5, 4.0]
+    beta  = [1, 1.2, 1.4, 1.6, 2]
+    
+    # Global tracking across all auctions
+    all_products = set()
+    price_diffs = defaultdict(list)
+    
+    # Number of parallel workers (adjust based on your CPU cores)
+    MAX_WORKERS = 4  # Set to number of CPU cores, or fewer if memory is a concern
+    
+    print(f"Processing {len(auction_ids)} auctions with {MAX_WORKERS} parallel workers...")
+    
+    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        # Submit all auction jobs
+        future_to_auction = {
+            executor.submit(process_single_auction, auction_id, AUCTION_UNIT, alpha, beta): auction_id
+            for auction_id in auction_ids
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_auction):
+            auction_id = future_to_auction[future]
+            try:
+                local_products, local_price_diffs = future.result()
+                
+                # Merge results into global tracking
+                all_products.update(local_products)
+                for key, diffs in local_price_diffs.items():
+                    price_diffs[key].extend(diffs)
+                
+                print(f"Completed auction {auction_id}")
+            except Exception as e:
+                print(f"Auction {auction_id} generated an exception: {e}")
+    
+    print(f"\nAll auctions processed. Total products: {len(all_products)}")
+    
+    # Save results to pickle file for later use
+    with open("price_diffs_cache.pkl", "wb") as f:
+        pickle.dump({
+            'all_products': all_products,
+            'price_diffs': dict(price_diffs)
+        }, f)
+    print("Results saved to price_diffs_cache.pkl")
+    
+    # Now plot the results as 2D heatmaps for each product
+    # This shows the feasible regions where alpha/beta changes have little effect on MCP
+    
+    alpha_vals = [1, 1.5, 2, 2.5, 3.0, 3.5, 4.0]
+    beta_vals = [1, 1.2, 1.4, 1.6, 2]
+    
+    for product in all_products:
+        # Build a matrix of percentage of times being a price maker (|MCP change| >= £0.50)
+        heatmap_data = np.zeros((len(alpha_vals), len(beta_vals)))
+        
+        for i, a in enumerate(alpha_vals):
+            for j, b in enumerate(beta_vals):
+                if a == 1 and b == 1:
+                    heatmap_data[i, j] = 0  # Baseline
+                    continue
+                key = (product, a, b)
+                if price_diffs[key]:
+                    # Count how many times |MCP change| >= £0.50 (price maker)
+                    price_maker_count = sum(1 for diff in price_diffs[key] if abs(diff) >= 0.5)
+                    total_count = len(price_diffs[key])
+                    heatmap_data[i, j] = (price_maker_count / total_count) * 100  # Percentage
+                else:
+                    heatmap_data[i, j] = np.nan
+        
+        plt.figure(figsize=(10, 8))
+        
+        # Create heatmap with sequential colormap (0% to 100%)
+        im = plt.imshow(heatmap_data, cmap='YlOrRd', aspect='auto', origin='lower',
+                        vmin=0, vmax=100)
+        plt.colorbar(im, label='Price Maker Frequency (%)')
+        
+        # Set axis labels
+        plt.xticks(range(len(beta_vals)), beta_vals)
+        plt.yticks(range(len(alpha_vals)), alpha_vals)
+        plt.xlabel('Beta (Price Multiplier)')
+        plt.ylabel('Alpha (Quantity Multiplier)')
+        plt.title(f'Price Maker Frequency for Product: {product}\n(|MCP Change| >= £0.50)')
+        
+        # Add text annotations
+        for i in range(len(alpha_vals)):
+            for j in range(len(beta_vals)):
+                if not np.isnan(heatmap_data[i, j]):
+                    text = plt.text(j, i, f'{heatmap_data[i, j]:.1f}%',
+                                   ha='center', va='center', color='black', fontsize=8)
+        
+        plt.tight_layout()
+        safe_product_name = product.replace('/', '_').replace('\\', '_').replace(' ', '_')
+        plt.savefig(f"mcp_heatmap_{safe_product_name}.png", dpi=150)
+        plt.close()
+        print(f"Saved heatmap for product: {product}")
+    
+    # Also create a scatter plot showing all products together
+    plt.figure(figsize=(12, 8))
+    
+    for product in all_products:
+        xs = []
+        ys = []
+        for (prod, a, b), diffs in price_diffs.items():
+            if prod == product and diffs:
+                xs.append(a * b)  # Combined multiplier effect
+                # Calculate price maker percentage
+                price_maker_count = sum(1 for diff in diffs if abs(diff) >= 0.5)
+                ys.append((price_maker_count / len(diffs)) * 100)
+        if xs:
+            plt.scatter(xs, ys, label=product, alpha=0.7)
+    
+    plt.axhline(y=50, color='red', linestyle=':', alpha=0.5, label='50% threshold')
+    plt.xlabel('Alpha × Beta (Combined Multiplier)')
+    plt.ylabel('Price Maker Frequency (%)')
+    plt.title('Price Maker Frequency vs Bid Aggressiveness\n(Price Maker = |MCP Change| >= £0.50)')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.show()
-
-    # Print summary of all auctions
-    print("\n\n=== SUMMARY ===")
-    for w in welfare:
-        print(f"Auction {w['auction_id']}: Max Revenue={w['max_revenue']:.2f}, alpha={w['best_alpha']}, beta={w['best_beta']}")
-
-
+    
+    plt.savefig("mcp_sensitivity_all_products.png", dpi=150)
+    plt.close()
+    print("Saved combined scatter plot")
