@@ -6,7 +6,11 @@ import urllib.request
 import urllib.parse
 import json
 
+
 class PowerExport:
+    # Class-level cache for frequency data (shared across all instances)
+    _frequency_cache: Dict[Tuple[str, str], List[Tuple[str, float]]] = {}
+    
     def __init__(self, power_export_type: str):
         self.power_export_type = power_export_type
         self.deadband = 0.015
@@ -68,7 +72,7 @@ class PowerExport:
         power_profile = self.build_power_profile_from_orders(multi_product_orders)
         
         if len(power_profile) == 0:
-            return 0.0
+            return 0.0, battery.soh if battery.soh is not None else battery.settings['SOH0']
         
         # Store initial state before simulation (preserving all battery state variables)
         initial_soh = battery.soh if battery.soh is not None else battery.settings['SOH0']
@@ -84,7 +88,47 @@ class PowerExport:
         # Convert SOH loss to cost
         degradation_cost = delta_soh * meu 
         
-        return degradation_cost
+        return degradation_cost, battery.soh_trajectory[-1]
+
+    def degradation_model_with_alpha(self, battery: VolkanBattery, multi_product_orders: List[MultiProductOrder], meu: float, alpha: float) -> Tuple[float, float]:
+        """
+        Compute degradation cost with power profile scaled by alpha.
+        
+        This correctly accounts for the nonlinear relationship between alpha and degradation
+        by scaling the power profile BEFORE simulation rather than scaling the result after.
+        
+        Args:
+            battery: Battery object to simulate
+            multi_product_orders: Orders to build power profile from
+            meu: Degradation cost parameter (cost per unit SOH loss)
+            alpha: Scaling factor for the power profile
+            
+        Returns:
+            Tuple of (degradation_cost, final_soh)
+        """
+        power_profile = self.build_power_profile_from_orders(multi_product_orders)
+        
+        if len(power_profile) == 0:
+            return 0.0, battery.soh if battery.soh is not None else battery.settings['SOH0']
+        
+        # Scale the power profile by alpha
+        scaled_power_profile = power_profile * alpha
+        
+        # Store initial state before simulation
+        initial_soh = battery.soh if battery.soh is not None else battery.settings['SOH0']
+        initial_energy = battery.energy if battery.energy is not None else battery.settings['E0']
+        initial_temp = battery.temp if battery.temp is not None else battery.settings['Tk0']
+        
+        # Simulate with scaled power profile
+        battery.simulate(scaled_power_profile, energy=initial_energy, temp=initial_temp, soh=initial_soh)
+        
+        # Calculate SOH loss
+        delta_soh = initial_soh - battery.soh_trajectory[-1]
+        
+        # Convert SOH loss to cost
+        degradation_cost = delta_soh * meu 
+        
+        return degradation_cost, battery.soh_trajectory[-1]
 
 
     def build_power_profile_from_orders(self, multi_product_orders: List[MultiProductOrder]) -> np.ndarray:
@@ -144,6 +188,7 @@ class PowerExport:
     def frequency_data(self, start_time: str, end_time: str) -> List[Tuple[str, float]]:
         """
         Fetch frequency data from ELEXON API for a given time range.
+        Results are cached to avoid repeated API calls during optimization.
         
         Args:
             start_time: ISO 8601 formatted start time (e.g., '2025-03-31T22:00:00')
@@ -152,14 +197,18 @@ class PowerExport:
         Returns:
             List of (timestamp, frequency) tuples
         """
-        if not start_time.endswith('Z'):
-            start_time = start_time + 'Z'
-        if not end_time.endswith('Z'):
-            end_time = end_time + 'Z'
+        # Normalize timestamps for cache key
+        cache_start = start_time if start_time.endswith('Z') else start_time + 'Z'
+        cache_end = end_time if end_time.endswith('Z') else end_time + 'Z'
+        cache_key = (cache_start, cache_end)
+        
+        # Check cache first
+        if cache_key in PowerExport._frequency_cache:
+            return PowerExport._frequency_cache[cache_key]
         
         params = urllib.parse.urlencode({
-            "from": start_time,
-            "to": end_time,
+            "from": cache_start,
+            "to": cache_end,
             "format": "json"
         })
         url = f"{self.url}?{params}"
@@ -172,6 +221,9 @@ class PowerExport:
                     timestamp = entry.get('measurementTime', '')
                     freq = float(entry.get('frequency', 50.0))
                     frequencies.append((timestamp, freq))
+                
+                # Store in cache
+                PowerExport._frequency_cache[cache_key] = frequencies
                 return frequencies
         except Exception as e:
             print(f"Error fetching frequency data: {e}")
