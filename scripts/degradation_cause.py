@@ -16,7 +16,7 @@ def process_meu(meu):
     soh = 1.0
     iteration = 0
     
-    while iteration < MAX_ITERATIONS and soh > 0.001:
+    while iteration < MAX_ITERATIONS and soh > 0.8:
         iteration += 1
         for auction_id in AUCTION_IDS:
             optimiser = PriceMakerOptimiser(auction_id)
@@ -35,7 +35,7 @@ def process_meu(meu):
             print(f"SOH after iteration {iteration}: {result['SOH']}")
             cumulative_profit += result['objective_value']
             soh = result['SOH']
-            if soh < 0.001:
+            if soh < 0.8:
                 break
     
     return meu, cumulative_profit
