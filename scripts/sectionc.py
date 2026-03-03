@@ -12,7 +12,7 @@ import os
 # ELEXON API endpoints
 ELEXON_BASE_URL = "https://data.elexon.co.uk/bmrs/api/v1/system/frequency"
 
-DATA_FILE = "neso_buy_data.csv"
+DATA_FILE = "neso_auction_data.csv"
 
 def fetch_and_save_data(resource_id: str, output_file: str, batch_size: int = 10000, 
                          target_auction_ids: int = 240) -> Tuple[int, Set[str]]:
@@ -138,19 +138,21 @@ def load_data_from_csv(filepath: str) -> List[dict]:
 
 
 if __name__ == "__main__":
-    resource_id = "1cf68f59-8eb8-4f1d-bccf-11b5a47b24e5"
+    # resource_id = "1cf68f59-8eb8-4f1d-bccf-11b5a47b24e5"
+    resource_id = "13b511df-d6ec-4143-afb1-0ecc6fd19810"
     
     # Fetch and save data (will resume if file exists)
     total_records, unique_auction_ids = fetch_and_save_data(
         resource_id, 
         DATA_FILE, 
         batch_size=10000,  # Smaller batch to avoid memory issues
-        target_auction_ids=240
+        target_auction_ids=365
     )
+    unique_auction_ids = sorted(int(x) for x in unique_auction_ids)
     
     print(f"\n{'='*50}")
     print(f"Total records saved: {total_records}")
     print(f"Total unique auction IDs: {len(unique_auction_ids)}")
-    print(f"Unique auction IDs: {sorted(unique_auction_ids)}")
+    print(f"Unique auction IDs: {unique_auction_ids}")
     print(f"Data saved to: {DATA_FILE}")
     print(f"\nTo load data later, use: load_data_from_csv('{DATA_FILE}')")
