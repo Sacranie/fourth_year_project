@@ -56,13 +56,13 @@ class PriceMakerOptimiser:
                     total_degradation += degradation_cost
         
         profit = total_revenue - total_degradation
-        return profit, final_soh
+        return total_revenue, total_degradation, profit, final_soh
 
     def solve(self, lower_alpha: float, upper_alpha: float, meu: float, battery: VolkanBattery):
         
         def negative_profit(alpha):
             """Objective function: negative profit (since minimize_scalar minimizes)."""
-            profit, _ = self.compute_profit_at_alpha(alpha, meu, battery)
+            _, _, profit, _ = self.compute_profit_at_alpha(alpha, meu, battery)
             return -profit
         
         # Use bounded Brent's method for 1D optimization
