@@ -1,9 +1,8 @@
 import copy
-import numpy as np
 from scipy.optimize import minimize_scalar
 from .loading_data import LoadingData
 from .battery import VolkanBattery
-from .power_export import PowerExport
+from .degradation_model import degradation_model
 
 
 class PriceMakerOptimiser:
@@ -39,22 +38,30 @@ class PriceMakerOptimiser:
         total_revenue = 0.0
         total_degradation = 0.0
         final_soh = battery_copy.soh if battery_copy.soh is not None else battery_copy.settings['SOH0']
-        
+
+        # We need to iterate through the multi orders an we need to find the orders that belong to the auctionunit GSET-02 and then we need to only look at accepted ones and then we need to build the powerprofile from all of thes emulti orders within the auction id
+        mo = []
         for multi_order in multi_orders:
+            for order in multi_order.fragments:
+                if order.auctionUnit == self.auction_unit and order.status == "ACCEPTED":
+                    mo.append(multi_order)
+                    break
+        
+        for multi_order in mo:
             for order in multi_order.fragments:
                 if order.auctionUnit == self.auction_unit:
                     # Revenue: alpha * quantity * price
                     price = original_mcp.get((order.auctionProduct, multi_order.window), 0.0)
-                    revenue = alpha * order.quantity * price * 3 # This is because each order is for 3 hours, so we multiply by 3 to get total revenue for the order
+                    revenue = alpha * order.quantity * price * 4 # This is because each order is for 4 hours, so we multiply by 4 to get total revenue for the order
                     total_revenue += revenue
                     
-                    # Degradation: simulate with scaled power profile
-                    power_export = PowerExport(order.auctionProduct)
-                    degradation_cost, final_soh = power_export.degradation_model_with_alpha(
-                        battery_copy, [multi_order], meu, alpha
-                    )
-                    total_degradation += degradation_cost
-        
+                    
+        degradation = degradation_model()
+        degradation_cost, final_soh = degradation.degradation_model_with_alpha(
+            battery_copy, mo, meu, alpha
+        )
+        total_degradation += degradation_cost
+    
         profit = total_revenue - total_degradation
         return total_revenue, total_degradation, profit, final_soh
 
@@ -97,20 +104,29 @@ class PriceMakerOptimiser:
         total_revenue = 0.0
         total_degradation = 0.0
         final_soh = battery.soh if battery.soh is not None else battery.settings['SOH0']
-        
+
+        # We need to iterate through the multi orders an we need to find the orders that belong to the auctionunit GSET-02 and then we need to only look at accepted ones and then we need to build the powerprofile from all of thes emulti orders within the auction id
+        mo = []
         for multi_order in multi_orders:
             for order in multi_order.fragments:
+                if order.auctionUnit == self.auction_unit and order.status == "ACCEPTED":
+                    mo.append(multi_order)
+                    break
+        
+        for multi_order in mo:
+            for order in multi_order.fragments:
                 if order.auctionUnit == self.auction_unit:
+                    # Revenue: alpha * quantity * price
                     price = original_mcp.get((order.auctionProduct, multi_order.window), 0.0)
-                    revenue = alpha * order.quantity * price * 3 # This is because each order is for 3 hours, so we multiply by 3 to get total revenue for the order
+                    revenue = alpha * order.quantity * price * 4 # This is because each order is for 4 hours, so we multiply by 4 to get total revenue for the order
                     total_revenue += revenue
                     
-                    power_export = PowerExport(order.auctionProduct)
-                    # This call modifies battery state in place
-                    degradation_cost, final_soh = power_export.degradation_model_with_alpha(
-                        battery, [multi_order], meu, alpha
-                    )
-                    total_degradation += degradation_cost
-        
+                    
+        degradation = degradation_model()
+        degradation_cost, final_soh = degradation.degradation_model_with_alpha(
+            battery, mo, meu, alpha
+        )
+        total_degradation += degradation_cost
+    
         profit = total_revenue - total_degradation
-        return profit, final_soh
+        return total_revenue, total_degradation, profit, final_soh

@@ -85,7 +85,7 @@ class LoadingData:
                 orderEntryTime=str(row.get("orderEntryTime", "") or ""),
                 product_id=str(row.get("productID", "") or ""),
                 status=status,
-                min_acceptance_ratio=row.get("minAcceptanceRatio", 0.0) or 0.0,
+                min_acceptance_ratio=row.get("acceptanceRatio", 0.0) or 0.0,
             )
             original_mcp[(sell_order.auctionProduct, (sell_order.deliveryStart, sell_order.deliveryEnd))] = float(row.get("clearingPrice", 0.0) or 0.0)
         

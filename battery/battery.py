@@ -33,24 +33,24 @@ class VolkanBattery:
         cyc_ag_ch = np.genfromtxt(data_location+'/cyc_ageing_ch.csv', delimiter=",")
         cal_ag = np.genfromtxt(data_location+'/cal_ageing_discounted.csv', delimiter=",")
 
-        settings = {'AC_eta_ch': 0.95, # charge eff of power electronics
-                    'AC_eta_dc': 0.95, # discharge eff of power electronics
-                    'bat_eta_ch': 0.95, # charge eff of battery
-                    'bat_eta_dc': 0.95, # discharge eff of battery
+        settings = {'AC_eta_ch': 0.97, # charge eff of power electronics
+                    'AC_eta_dc': 0.97, # discharge eff of power electronics
+                    'bat_eta_ch': 0.98, # charge eff of battery
+                    'bat_eta_dc': 0.98, # discharge eff of battery
                     'dataName': 'idc_positive_dummy.csv',
                     'studyName': 'opportunity_hypothesis_2023_09_09',
-                    'horizon': 24*240, # horizon [h]
+                    'horizon': 24, # horizon [h] = 1 day
                     'control-horizon' : 1,
-                    'duration': 24*365*100, # 100 years
-                    'C-rate': [1.0, 1.2], # C-rate for charge and discharge
+                    'duration': 24*365*10, # 10 years
+                    'C-rate': [1.0, 1.0], # C-rate for charge and discharge
                     'lambda_cal': 1.0,
                     'lambda_cyc': 1.0,
-                    'dt' : 0.25/60, 
+                    'dt' : 15/3600, # 15 s timestep in hours
                     'EOL': 0.8,
                     'price_kWhcap' : 250,
-                    'Enom' : 24*8,  # kWh
-                    'SOCmin': 0.0, 
-                    'SOCmax': 1.0,
+                    'Enom' : 8000,  # kWh
+                    'SOCmin': 0.05, 
+                    'SOCmax': 0.95,
                     # very initial values: 
                     'Tamb' : 18 + KELVIN, # Ambient temperature
                     'Tk0'  : KELVIN + 18,
