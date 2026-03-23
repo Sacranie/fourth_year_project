@@ -1,16 +1,7 @@
 from typing import Dict, List, Tuple
-from datetime import datetime, timedelta
-import numpy as np
-from .battery import VolkanBattery
-from eac.models import MultiProductOrder
-import urllib.request
-import urllib.parse
-import json
 
 
 class PowerExport:
-    # Class-level cache for frequency data (shared across all instances)
-    _frequency_cache: Dict[Tuple[str, str], List[Tuple[str, float]]] = {}
     
     def __init__(self, power_export_type: str):
         self.power_export_type = power_export_type

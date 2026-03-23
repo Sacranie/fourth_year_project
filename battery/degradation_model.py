@@ -71,7 +71,7 @@ class degradation_model:
         
         # Simulate with scaled power profile
         battery.simulate(scaled_power_profile, energy=initial_energy, temp=initial_temp, soh=initial_soh)
-        
+
         # Calculate SOH loss
         delta_soh = initial_soh - battery.soh_trajectory[-1]
         
@@ -84,19 +84,16 @@ class degradation_model:
     def build_power_profile_from_orders(self, multi_product_orders: List[MultiProductOrder]) -> np.ndarray:
 
         power_by_timestamp = {}  # timestamp -> power (kW)
-        maximum_ratio = 0.0
-        max_power = 0.0
+
         
         for mpo in multi_product_orders:
-            # Use SOLVED acceptance from x_s_computed
-            acceptance = 1.0  # Assume full acceptance in price taker mode
-                
             for fragment in mpo.fragments:
                 product = fragment.auctionProduct.upper()
+
                 start_time = fragment.deliveryStart
                 end_time = fragment.deliveryEnd
-                quantity_mw = fragment.quantity * acceptance  # MW
-                
+                quantity_mw = fragment.quantity  # MW
+
                 # Fetch frequency data for this delivery window
                 frequencies = self.frequency_data(start_time, end_time)
                 
@@ -107,14 +104,12 @@ class degradation_model:
                 for timestamp, freq in frequencies:
                     # Calculate export ratio based on frequency deviation
                     export_ratio = power_export_function(freq - 50.0)
-                    maximum_ratio = max(maximum_ratio, export_ratio)
                     
                     # Power in kW (convert from MW)
                     # DCL/DML/DRL = Low frequency -> discharge (negative power)
                     # DCH/DMH/DRH = High frequency -> charge (positive power)
                     power_kw = quantity_mw * 1000 * export_ratio  # Convert MW to kW
-                    max_power = max(max_power, power_kw)
-                    
+
                     # Determine sign based on product type and frequency
                     if product in {'DCL', 'DML', 'DRL'}:
                         power_kw = -power_kw

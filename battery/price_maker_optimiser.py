@@ -39,13 +39,15 @@ class PriceMakerOptimiser:
         total_degradation = 0.0
         final_soh = battery_copy.soh if battery_copy.soh is not None else battery_copy.settings['SOH0']
 
-        # We need to iterate through the multi orders an we need to find the orders that belong to the auctionunit GSET-02 and then we need to only look at accepted ones and then we need to build the powerprofile from all of thes emulti orders within the auction id
+        # We need to iterate through the multi orders an we need to find the orders that belong to the auctionunit GSET-02 and then we need to only look at accepted ones and then we need to build the power profile from all of thes emulti orders within the auction id
         mo = []
         for multi_order in multi_orders:
             for order in multi_order.fragments:
-                if order.auctionUnit == self.auction_unit and order.status == "ACCEPTED":
+                if order.auctionUnit == self.auction_unit and order.status == "EXECUTED":
                     mo.append(multi_order)
                     break
+        if mo == []:
+            print("No executed orders found for the specified auction unit. Profit will be zero.")
         
         for multi_order in mo:
             for order in multi_order.fragments:
@@ -83,7 +85,7 @@ class PriceMakerOptimiser:
         optimal_alpha = result.x
         
         # Compute final profit and SOH at optimal alpha, updating the actual battery
-        final_profit, final_soh = self._apply_optimal_solution(optimal_alpha, meu, battery)
+        _, _, final_profit, final_soh = self._apply_optimal_solution(optimal_alpha, meu, battery)
         
         return {
             "status": "Optimal" if result.success else "Failed",
@@ -105,11 +107,11 @@ class PriceMakerOptimiser:
         total_degradation = 0.0
         final_soh = battery.soh if battery.soh is not None else battery.settings['SOH0']
 
-        # We need to iterate through the multi orders an we need to find the orders that belong to the auctionunit GSET-02 and then we need to only look at accepted ones and then we need to build the powerprofile from all of thes emulti orders within the auction id
+        # We need to iterate through the multi orders an we need to find the orders that belong to the auctionunit GSET-02 and then we need to only look at accepted ones and then we need to build the profile from all of thes emulti orders within the auction id
         mo = []
         for multi_order in multi_orders:
             for order in multi_order.fragments:
-                if order.auctionUnit == self.auction_unit and order.status == "ACCEPTED":
+                if order.auctionUnit == self.auction_unit and order.status == "EXECUTED":
                     mo.append(multi_order)
                     break
         
