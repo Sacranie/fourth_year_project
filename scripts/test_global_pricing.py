@@ -7,8 +7,8 @@ import urllib.parse
 
 from matching_using_date import process_buy_orders
 from eac.multi_product_orders import group_multi_product_orders
-from eac.models import SellOrder, BuyOrder
-from eac.PricingLP import GlobalPricingLP, ROUNDING_TOL_DECIMAL
+from eac.models import SellOrder
+from eac.PricingLP import GlobalPricingLP
 from eac.solver import PulpSolverBackend
 
 # NESO API endpoints
@@ -273,7 +273,7 @@ if __name__ == "__main__":
         match_percentages.append((auction_index, match_pct))
         procurement_costs.append((auction_index, procurement_cost_API_value, procurement_cost_LP))
         
-        if auction_index == 5:
+        if auction_id == 1236:
             print_price_comparison(computed_prices, data["expected_prices"])
         auction_index += 1
 

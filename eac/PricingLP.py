@@ -1,22 +1,21 @@
 from typing import List, Dict, Tuple, Optional, Iterable, Set
 from collections import defaultdict
-from decimal import Decimal
 import pulp
 from eac.solver import PulpSolverBackend
 from eac.models import SellOrder, MultiProductOrder, BuyOrder
+from eac.rounding import round_price_up_to_cent
 
-"""
-Implements the pricing linear program for the EAC market clearing process.
-"""
 
 ACCEPTANCE_EPS = 1e-9
 COEFF_TOL = 1e-12
-ROUNDING_TOL_DECIMAL = Decimal("0.000001")
 PRICE_MIN = -10.0
-PRICE_MAX = 35.0  # Based on analysis of real market data - max MCP observed is ~£32.70
+PRICE_MAX = 35.0 
 
 
-def _collect_active_pairs(multi_orders: Iterable[MultiProductOrder]) -> Set[Tuple[str, Tuple[str, str]]]:
+def _collect_active_pairs(
+    multi_orders: Iterable[MultiProductOrder],
+) -> Set[Tuple[str, Tuple[str, str]]]:
+
     active_pairs = set()
     for order in multi_orders:
         if order.is_accepted:
@@ -26,8 +25,11 @@ def _collect_active_pairs(multi_orders: Iterable[MultiProductOrder]) -> Set[Tupl
     return active_pairs
 
 
-def _accumulate_order_terms(order: MultiProductOrder,
-                            price_variables: Dict[Tuple[str, Tuple[str, str]], pulp.LpVariable]) -> Tuple[List, float]:
+def _accumulate_order_terms(
+    order: MultiProductOrder,
+    price_variables: Dict[Tuple[str, Tuple[str, str]], pulp.LpVariable],
+) -> Tuple[List, float]:
+
     terms = []
     constant = 0.0
 
@@ -37,162 +39,178 @@ def _accumulate_order_terms(order: MultiProductOrder,
     for fragment in order.fragments:
         window = (fragment.deliveryStart, fragment.deliveryEnd)
         coeff = fragment.quantity * order.actual_acceptance
-        if abs(coeff) > COEFF_TOL:
-            computed_MCP_pence = price_variables.get((fragment.auctionProduct, window))
-            if computed_MCP_pence is None:
-                raise KeyError(f"Missing price variable for active pair {(fragment.auctionProduct, window)}")
-            terms.append((computed_MCP_pence * coeff) / 100.0)
-            # Use each fragment's own price, not order.price_limit
-            constant -= fragment.price * coeff
+        if abs(coeff) < COEFF_TOL:
+            continue
+        computed_MCP = price_variables.get((fragment.auctionProduct, window))
+        if computed_MCP is None:
+            raise KeyError(
+                f"Missing price variable for active pair {(fragment.auctionProduct, window)} "
+                f"referenced by order {order.canonical_order_id}"
+            )
+        terms.append(computed_MCP * coeff)
+        constant -= fragment.price * coeff
 
     return terms, constant
 
 
-def _accumulate_orders_terms(orders: Iterable[MultiProductOrder],
-                             price_variables: Dict[Tuple[str, Tuple[str, str]], pulp.LpVariable]) -> Tuple[List, float]:
-    agg_terms = []
+def _accumulate_orders_terms(
+    orders: Iterable[MultiProductOrder],
+    price_variables: Dict[Tuple[str, Tuple[str, str]], pulp.LpVariable],
+) -> Tuple[List, float]:
+    """Aggregate surplus terms across a collection of orders (basket or loop family)."""
+    agg_terms: List = []
     agg_constant = 0.0
-
     for order in orders:
         if order.is_accepted:
             order_terms, order_constant = _accumulate_order_terms(order, price_variables)
             agg_terms.extend(order_terms)
             agg_constant += order_constant
-
     return agg_terms, agg_constant
 
 
 class GlobalPricingLP:
     """
-    Global Pricing LP that solves all time windows simultaneously.
-    
-    Constraints:
-    1. CHILD orders: Individual/multi-product surplus >= 0
-    2. PARENT orders: NO individual constraint
-    3. NON-LOOPED BASKETS: Total basket surplus >= 0 
-    4. LOOP FAMILIES: Total surplus across ALL baskets in family >= 0
-    5. NON-PARADOXICAL BUY ORDERS: Buy order price <= bid price
-    6. PQR and NQR auction products have a minimum MCP of £0.00
-    
-    Objective: Minimize procurement cost subject to all surplus constraints
+    Global Pricing LP — solves all time windows simultaneously.
+
+    Constraints implemented (per spec Section 7.1 and clearing rules 7-8):
+      1. CHILD orders (individual): surplus >= 0
+      2. SUBSTITUTABLE CHILD orders (individual): surplus >= 0
+         Note: spec rule 7 applies to both child and substitutable child.
+      3. NON-LOOPED BASKETS: total basket surplus >= 0
+         (covers the parent's contribution via the basket aggregate)
+      4. LOOP FAMILIES: total surplus across ALL baskets in the family >= 0
+      5. PQR / NQR products: MCP >= £0.00  (product-specific floor)
+
+    Objective (spec Section 7.2):
+      Minimise procurement cost = sum( MCP * accepted_qty ) over all accepted sell orders.
+      This resolves price indeterminacy while respecting all surplus constraints above.
     """
-    
-    def __init__(self, backend: Optional[PulpSolverBackend] = None,
-                 price_min: float = PRICE_MIN, price_max: float = PRICE_MAX):
+
+    def __init__(
+        self,
+        backend: Optional[PulpSolverBackend] = None,
+        price_min: float = PRICE_MIN,
+        price_max: float = PRICE_MAX,
+    ):
         self.backend = backend or PulpSolverBackend()
         self.price_min = price_min
         self.price_max = price_max
 
-    def solve(self, 
-              multi_orders: List[MultiProductOrder],
-              buy_orders: List[BuyOrder],
-              basket_to_loop: Dict[int, List[int]] = None,
-              buy_acceptance: Dict[str, float] = None,
-             ) -> Tuple[Dict[Tuple[str, Tuple], float], pulp.LpProblem, str]:
+    def solve(
+        self,
+        multi_orders: List[MultiProductOrder],
+        buy_orders: List[BuyOrder],          # kept for API compatibility; not used in pricing
+        basket_to_loop: Dict[int, List[int]] = None,
+        buy_acceptance: Dict[str, float] = None,  # kept for API compatibility; not used
+    ) -> Tuple[Dict[Tuple[str, Tuple], float], pulp.LpProblem, str]:
+
         basket_to_loop = basket_to_loop or defaultdict(list)
-        buy_acceptance = buy_acceptance or {}
 
         active_product_windows = _collect_active_pairs(multi_orders)
 
-        # Use global price bounds for all active product-window pairs (per NESO spec)
         price_prob = pulp.LpProblem("EAC_Global_Pricing", pulp.LpMinimize)
         p_vars: Dict[Tuple[str, Tuple[str, str]], pulp.LpVariable] = {}
-        cents_min = int(round(self.price_min * 100))
-        cents_max = int(round(self.price_max * 100))
+
         for product, window in sorted(active_product_windows):
-            var_name = f"price_{product}_{window[0]}_{window[1]}".replace(":", "_").replace("-", "_")
+            var_name = (
+                f"price_{product}_{window[0]}_{window[1]}"
+                .replace(":", "_")
+                .replace("-", "_")
+            )
             p_vars[(product, window)] = pulp.LpVariable(
-                var_name, lowBound=cents_min, upBound=cents_max, cat="Integer"
+                var_name, lowBound=self.price_min, upBound=self.price_max, cat="Continuous"
             )
 
-        baskets_in_loops = set(b_id for _, basket_ids in basket_to_loop.items() for b_id in basket_ids)
-
-        orders_by_basket: Dict[int, List[MultiProductOrder]] = defaultdict(list)
-        for order in multi_orders:
-            orders_by_basket[order.basket_id].append(order)
-
-        # Compute procurement cost terms (the objective)
+        # Objective: minimise procurement cost (spec Section 7.2)
+        # Procurement cost = sum over accepted sell orders of (MCP * qty * acceptance)
         procurement_terms = []
         for order in multi_orders:
             if order.is_accepted:
                 for fragment in order.fragments:
                     window = (fragment.deliveryStart, fragment.deliveryEnd)
                     coeff = fragment.quantity * order.actual_acceptance
-                    if abs(coeff) > COEFF_TOL:
-                        var_pence = p_vars.get((fragment.auctionProduct, window))
-                        if var_pence is not None:
-                            procurement_terms.append((var_pence * coeff) / 100.0)
-        
-        # Set objective: Minimize procurement cost
-        if procurement_terms:
-            price_prob += pulp.lpSum(procurement_terms), "MinimizeProcurementCost"
-        else:
-            price_prob += 0.0, "MinimizeProcurementCost"
+                    if abs(coeff) < COEFF_TOL:
+                        continue
+                    var_mcp = p_vars.get((fragment.auctionProduct, window))
+                    if var_mcp is not None:
+                        procurement_terms.append(var_mcp * coeff)
 
-        # CONSTRAINT 1: Child order surplus >= 0.
+        price_prob += (
+            pulp.lpSum(procurement_terms) if procurement_terms else 0.0,
+            "MinimizeProcurementCost",
+        )
+
+        baskets_in_loops: Set[int] = set(
+            b_id for basket_ids in basket_to_loop.values() for b_id in basket_ids
+        )
+
+        orders_by_basket: Dict[int, List[MultiProductOrder]] = defaultdict(list)
         for order in multi_orders:
-            if order.order_type == 'child' and order.is_accepted:
-                order_terms, order_constant = _accumulate_order_terms(order, p_vars)
-                if order_terms or abs(order_constant) > COEFF_TOL:
-                    if not order_terms and abs(order_constant) > COEFF_TOL:
-                        raise RuntimeError(
-                            f"Cannot enforce surplus for child order {order.canonical_order_id}; missing price variables"
-                        )
-                    constraint_expr = pulp.lpSum(order_terms) + order_constant
-                    price_prob += constraint_expr >= 0.0, f"child_multiproduct_{order.canonical_order_id}"
+            orders_by_basket[order.basket_id].append(order)
 
-        # CONSTRAINT 2: Non-looped basket surplus >= 0
+        # Constraint 1 & 2: Individual surplus >= 0 for child and
+        # substitutable_child orders (spec clearing rule 7)
+        for order in multi_orders:
+            if order.order_type in ("child", "substitutable_child") and order.is_accepted:
+                order_terms, order_constant = _accumulate_order_terms(order, p_vars)
+                if not order_terms and abs(order_constant) > COEFF_TOL:
+                    raise RuntimeError(
+                        f"Cannot enforce surplus for {order.order_type} order "
+                        f"{order.canonical_order_id}; missing price variables"
+                    )
+                if order_terms or abs(order_constant) > COEFF_TOL:
+                    constraint_expr = pulp.lpSum(order_terms) + order_constant
+                    price_prob += (
+                        constraint_expr >= 0.0,
+                        f"individual_surplus_{order.canonical_order_id}",
+                    )
+
+        # Constraint 3: Non-looped basket total surplus >= 0
+        #  (spec clearing rule 8, non-looped case)
         for basket_id, orders in orders_by_basket.items():
             if basket_id not in baskets_in_loops:
                 basket_terms, basket_constant = _accumulate_orders_terms(orders, p_vars)
+                if not basket_terms and abs(basket_constant) > COEFF_TOL:
+                    raise RuntimeError(
+                        f"Cannot enforce basket surplus for basket {basket_id}; "
+                        f"missing price variables"
+                    )
                 if basket_terms or abs(basket_constant) > COEFF_TOL:
-                    if not basket_terms and abs(basket_constant) > COEFF_TOL:
-                        raise RuntimeError(
-                            f"Cannot enforce basket surplus for basket {basket_id}; missing price variables"
-                        )
                     basket_expr = pulp.lpSum(basket_terms) + basket_constant
-                    price_prob += basket_expr >= 0.0, f"basket_profit_{basket_id}"
+                    price_prob += basket_expr >= 0.0, f"basket_surplus_{basket_id}"
 
-        # CONSTRAINT 3: Loop family surplus >= 0
+        # Constraint 4: Loop family total surplus >= 0
+        # (spec clearing rule 8, looped case) 
         for loop_id, basket_ids in basket_to_loop.items():
-            loop_orders = []
+            loop_orders: List[MultiProductOrder] = []
             for basket_id in basket_ids:
                 loop_orders.extend(orders_by_basket.get(basket_id, []))
             loop_terms, loop_constant = _accumulate_orders_terms(loop_orders, p_vars)
+            if not loop_terms and abs(loop_constant) > COEFF_TOL:
+                raise RuntimeError(
+                    f"Cannot enforce loop family surplus for loop {loop_id}; "
+                    f"missing price variables"
+                )
             if loop_terms or abs(loop_constant) > COEFF_TOL:
-                if not loop_terms and abs(loop_constant) > COEFF_TOL:
-                    raise RuntimeError(
-                        f"Cannot enforce loop family surplus for loop {loop_id}; missing price variables"
-                    )
                 loop_expr = pulp.lpSum(loop_terms) + loop_constant
-                price_prob += loop_expr >= 0.0, f"loop_family_{loop_id}"
-        
-        # Constraint 4: Non-paradoxical buy orders (only if accepted)
-        for b in buy_orders:
-            order_id = b.orderID
-            # Only apply constraint if order is accepted (acceptance > 0)
-            # If buy_acceptance is empty, assume all orders are accepted (backward compatibility)
-            acceptance = buy_acceptance.get(order_id, 1.0) if buy_acceptance else 1.0
-            if not b.paradoxical and b.quantity > 0 and acceptance > ACCEPTANCE_EPS:
-                window = (b.deliveryStart, b.deliveryEnd)
-                var_pence = p_vars.get((b.auctionProduct, window))
-                if var_pence is not None:
-                    buy_price_expr = var_pence / 100.0
-                    price_prob += buy_price_expr <= b.price, f"non_paradoxical_buy_{b.orderID}"
-        
-        # Constraint 5: PQR and NQR auction products have a minimum MCP of £0.00
+                price_prob += loop_expr >= 0.0, f"loop_family_surplus_{loop_id}"
+
+        # Constraint 5: PQR / NQR floor at £0.00
         for product, window in active_product_windows:
-            if product == "PQR" or product == "NQR":
-                var_pence = p_vars.get((product, window))
-                if var_pence is not None:
-                    price_prob += var_pence >= 0, f"min_price_pqr_nqr_{product}_{window[0]}_{window[1]}"
+            if product in ("PQR", "NQR"):
+                var_mcp = p_vars.get((product, window))
+                if var_mcp is not None:
+                    price_prob += (
+                        var_mcp >= 0,
+                        f"min_price_zero_{product}_{window[0]}_{window[1]}",
+                    )
 
         status = self.backend.solve(price_prob)
         status_str = pulp.LpStatus[status]
 
         prices_val: Dict[Tuple[str, Tuple[str, str]], float] = {}
-        for key, var_pence in p_vars.items():
-            raw_value = float(pulp.value(var_pence) if pulp.value(var_pence) is not None else 0.0)
-            prices_val[key] = float(Decimal(raw_value) / Decimal(100))
+        for key, var_mcp in p_vars.items():
+            raw = pulp.value(var_mcp)
+            prices_val[key] = round_price_up_to_cent(raw if raw is not None else 0.0)
 
         return prices_val, price_prob, status_str
