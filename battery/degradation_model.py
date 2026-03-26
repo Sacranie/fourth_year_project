@@ -59,8 +59,8 @@ class degradation_model:
         global_temp_trajectory = []
         global_soh_trajectory = []
 
-        for i in range(0, len(scaled_power_profile), 240):
-            scaled_power_profile_by_hour = scaled_power_profile[i:i+240]
+        for i in range(0, len(scaled_power_profile), 20):
+            scaled_power_profile_by_hour = scaled_power_profile[i:i+20]
 
             # Simulate with scaled power profile
             initial_soh = battery.soh if battery.soh is not None else battery.settings['SOH0']

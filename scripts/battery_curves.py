@@ -5,7 +5,7 @@ from battery.battery import VolkanBattery
 AUCTION_IDS = 1112
 
 if __name__ == "__main__":
-    meu = [0]  # Example MEU values to test
+    meu = [6e7]  # Example MEU values to test
     cumulative_profit = 0.0
 
 

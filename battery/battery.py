@@ -44,17 +44,17 @@ class VolkanBattery:
                     'duration': 24*365*10, # 10 years
                     'C-rate': [1.0, 1.0], # C-rate for charge and discharge
                     'lambda_cal': 1.0,
-                    'lambda_cyc': 1.0,
+                    'lambda_cyc': 10.0,
                     'dt' : 15/3600, # 15 s timestep in hours
                     'EOL': 0.8,
                     'price_kWhcap' : 250,
-                    'Enom' : 8000,  # kWh
+                    'Enom' : 1000,  # kWh
                     'SOCmin': 0.05, 
                     'SOCmax': 0.95,
                     # very initial values: 
                     'Tamb' : 18 + KELVIN, # Ambient temperature
                     'Tk0'  : KELVIN + 18,
-                    'E0'   : 4000.0, 
+                    'E0'   : 500.0, 
                     'SOH0' : 1.0,
                     'FEC0' : 0.0,
                     # PWA
@@ -240,7 +240,8 @@ class VolkanBattery:
         new_temp = self.temperature_transition(power)
         avg_soc = (self.energy + new_energy) / (2 * self.settings['Enom'] * self.settings['SOH0'])
         avg_temp = (self.temp + new_temp) / 2
-        q_loss = self.q_loss_cyc(power) + self.q_loss_cal(avg_soc, avg_temp)
+        q_loss = self.settings['lambda_cyc'] * self.q_loss_cyc(power) + self.settings['lambda_cal'] * self.q_loss_cal(avg_soc, avg_temp)
+
 
         # print(f"Time: {t}")
         # print(f"\tAvg temp: {avg_temp}, Avg SOC: {avg_soc}")
