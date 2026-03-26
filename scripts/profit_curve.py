@@ -4,11 +4,11 @@ import matplotlib.pyplot as plt
 
 
 if __name__ == "__main__":
-    meus = 6e6
+    meus = 6e6  # 9600 kWh × £150/kWh / 0.2 EOL × scaling
     profits = []
     revenue = []
     cost = []
-    alphas = [0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.2]
+    alphas = [0, 0.5, 1.0, 1.5,  2.0, 2.5, 3.0, 3.2]
     auction_id = 1112
     
     iteration = 0
@@ -17,6 +17,7 @@ if __name__ == "__main__":
         battery = VolkanBattery()
         battery.populate_with_volkan_parameters(data_location='data/')
         revenue_val, cost_val, profit, _ = optimiser.compute_profit_at_alpha(alpha, meu=meus, battery=battery)
+        print(f"Iteration {iteration}: Alpha={alpha}, Revenue={revenue_val}, Cost={cost_val}, Profit={profit}")
         revenue.append(revenue_val)
         cost.append(cost_val)
         profits.append(profit)
