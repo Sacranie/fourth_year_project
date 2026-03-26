@@ -39,7 +39,7 @@ class VolkanBattery:
                     'bat_eta_dc': 0.98, # discharge eff of battery
                     'dataName': 'idc_positive_dummy.csv',
                     'studyName': 'opportunity_hypothesis_2023_09_09',
-                    'horizon': 24, # horizon [h] = 1 day
+                    'horizon': 24 * 240, # horizon [h] = 1 day
                     'control-horizon' : 1,
                     'duration': 24*365*10, # 10 years
                     'C-rate': [1.0, 1.0], # C-rate for charge and discharge
@@ -54,7 +54,7 @@ class VolkanBattery:
                     # very initial values: 
                     'Tamb' : 18 + KELVIN, # Ambient temperature
                     'Tk0'  : KELVIN + 18,
-                    'E0'   : 0.0, 
+                    'E0'   : 4000.0, 
                     'SOH0' : 1.0,
                     'FEC0' : 0.0,
                     # PWA
@@ -121,6 +121,52 @@ class VolkanBattery:
 
         plot_num += 1
         ax[plot_num].plot(time, self.soh_trajectory, label='State of Health (SOH)', color='red')
+        ax[plot_num].set_ylabel('State of Health (SOH)')
+        ax[plot_num].set_xlabel('Time (h)')
+        ax[plot_num].legend()
+        ax[plot_num].grid()
+        # ax[3].set_xticklabels(np.arange(0, len(self.power_trajectory) * self.settings["dt"], self.settings["dt"]))
+        plt.tight_layout()
+        plt.show()
+
+        return fig, ax
+
+    def plot_simulation_global_trajectories(self, energy_trajectory, power_trajectory, temp_trajectory, soh_trajectory):
+
+        if energy_trajectory is None:
+            raise ValueError("No simulation data available. Please run the simulate method first.")
+        
+        time = np.arange(0, len(energy_trajectory) * self.settings["dt"], self.settings["dt"])
+        
+        num_plots = 5
+
+        fig, ax = plt.subplots(num_plots, 1, figsize=(10, 8), sharex=True)
+        plot_num = 0
+        ax[plot_num].plot(time, power_trajectory[0:len(energy_trajectory)], label='Power (kW)')
+        ax[plot_num].set_ylabel('Power (kW)')
+        ax[plot_num].legend()
+        ax[plot_num].grid()
+
+        plot_num += 1
+        ax[plot_num].plot(time, energy_trajectory, label='Energy (kWh)', color='orange')
+        ax[plot_num].set_ylabel('Energy (kWh)')
+        ax[plot_num].legend()
+        ax[plot_num].grid()
+
+        plot_num += 1
+        ax[plot_num].plot(time, np.array(energy_trajectory) / (np.array(soh_trajectory) * self.settings['Enom']), label='State of Charge (SOC)', color='blue')
+        ax[plot_num].set_ylabel('State of Charge (SOC)')
+        ax[plot_num].legend()
+        ax[plot_num].grid()
+
+        plot_num += 1
+        ax[plot_num].plot(time, self.kelvin_to_celsius(temp_trajectory), label='Temperature (C)', color='green')
+        ax[plot_num].set_ylabel('Temperature (C)')
+        ax[plot_num].legend()
+        ax[plot_num].grid()
+
+        plot_num += 1
+        ax[plot_num].plot(time, soh_trajectory, label='State of Health (SOH)', color='red')
         ax[plot_num].set_ylabel('State of Health (SOH)')
         ax[plot_num].set_xlabel('Time (h)')
         ax[plot_num].legend()

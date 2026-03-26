@@ -59,7 +59,7 @@ class PriceMakerOptimiser:
                     
                     
         degradation = degradation_model()
-        degradation_cost, final_soh = degradation.degradation_model_with_alpha(
+        degradation_cost, final_soh, _, _, _, _ = degradation.degradation_model_with_alpha(
             battery_copy, mo, meu, alpha
         )
         total_degradation += degradation_cost
@@ -85,14 +85,18 @@ class PriceMakerOptimiser:
         optimal_alpha = result.x
         
         # Compute final profit and SOH at optimal alpha, updating the actual battery
-        _, _, final_profit, final_soh = self._apply_optimal_solution(optimal_alpha, meu, battery)
+        _, _, final_profit, final_soh, global_energy_trajectory, global_power_trajectory, global_temp_trajectory, global_soh_trajectory = self._apply_optimal_solution(optimal_alpha, meu, battery)
         
         return {
             "status": "Optimal" if result.success else "Failed",
             "objective_value": final_profit,
             "optimal_alpha": optimal_alpha,
             "SOH": final_soh,
-            "iterations": result.nfev
+            "iterations": result.nfev,
+            "global_energy_trajectory": global_energy_trajectory,
+            "global_power_trajectory": global_power_trajectory,
+            "global_temp_trajectory": global_temp_trajectory,
+            "global_soh_trajectory": global_soh_trajectory
         }
     
     def _apply_optimal_solution(self, alpha: float, meu: float, battery: VolkanBattery):
@@ -125,10 +129,10 @@ class PriceMakerOptimiser:
                     
                     
         degradation = degradation_model()
-        degradation_cost, final_soh = degradation.degradation_model_with_alpha(
+        degradation_cost, final_soh, global_energy_trajectory, global_power_trajectory, global_temp_trajectory, global_soh_trajectory = degradation.degradation_model_with_alpha(
             battery, mo, meu, alpha
         )
         total_degradation += degradation_cost
     
         profit = total_revenue - total_degradation
-        return total_revenue, total_degradation, profit, final_soh
+        return total_revenue, total_degradation, profit, final_soh, global_energy_trajectory, global_power_trajectory, global_temp_trajectory, global_soh_trajectory

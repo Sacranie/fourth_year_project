@@ -29,7 +29,6 @@ class degradation_model:
         initial_energy = battery.energy if battery.energy is not None else battery.settings['E0']
         initial_temp = battery.temp if battery.temp is not None else battery.settings['Tk0']
         
-        # Pass all current state variables to simulate() so they don't reset
         battery.simulate(power_profile, energy=initial_energy, temp=initial_temp, soh=initial_soh)
         
         # Calculate SOH loss
@@ -41,21 +40,7 @@ class degradation_model:
         return degradation_cost, battery.soh_trajectory[-1]
 
     def degradation_model_with_alpha(self, battery: VolkanBattery, multi_product_orders: List[MultiProductOrder], meu: float, alpha: float) -> Tuple[float, float]:
-        """
-        Compute degradation cost with power profile scaled by alpha.
-        
-        This correctly accounts for the nonlinear relationship between alpha and degradation
-        by scaling the power profile BEFORE simulation rather than scaling the result after.
-        
-        Args:
-            battery: Battery object to simulate
-            multi_product_orders: Orders to build power profile from
-            meu: Degradation cost parameter (cost per unit SOH loss)
-            alpha: Scaling factor for the power profile
-            
-        Returns:
-            Tuple of (degradation_cost, final_soh)
-        """
+
         power_profile = self.build_power_profile_from_orders(multi_product_orders)
         
         if len(power_profile) == 0:
@@ -65,20 +50,34 @@ class degradation_model:
         scaled_power_profile = power_profile * alpha
         
         # Store initial state before simulation
-        initial_soh = battery.soh if battery.soh is not None else battery.settings['SOH0']
         initial_energy = battery.energy if battery.energy is not None else battery.settings['E0']
         initial_temp = battery.temp if battery.temp is not None else battery.settings['Tk0']
-        
-        # Simulate with scaled power profile
-        battery.simulate(scaled_power_profile, energy=initial_energy, temp=initial_temp, soh=initial_soh)
+        degradation_cost = 0.0
 
-        # Calculate SOH loss
-        delta_soh = initial_soh - battery.soh_trajectory[-1]
+        global_energy_trajectory = []
+        global_power_trajectory = []
+        global_temp_trajectory = []
+        global_soh_trajectory = []
+
+        for i in range(0, len(scaled_power_profile), 240):
+            scaled_power_profile_by_hour = scaled_power_profile[i:i+240]
+
+            # Simulate with scaled power profile
+            initial_soh = battery.soh if battery.soh is not None else battery.settings['SOH0']
+            battery.simulate(scaled_power_profile_by_hour, energy=initial_energy, temp=initial_temp, soh=initial_soh)
+
+            # Calculate SOH loss
+            delta_soh = initial_soh - battery.soh_trajectory[-1]
+
+            global_energy_trajectory.extend(battery.energy_trajectory)
+            global_power_trajectory.extend(scaled_power_profile_by_hour)
+            global_temp_trajectory.extend(battery.temp_trajectory)
+            global_soh_trajectory.extend(battery.soh_trajectory)
         
-        # Convert SOH loss to cost
-        degradation_cost = delta_soh * meu 
-        
-        return degradation_cost, battery.soh_trajectory[-1]
+            # Convert SOH loss to cost
+            degradation_cost += delta_soh * meu 
+            
+        return degradation_cost, battery.soh_trajectory[-1], global_energy_trajectory, global_power_trajectory, global_temp_trajectory, global_soh_trajectory
 
 
     def build_power_profile_from_orders(self, multi_product_orders: List[MultiProductOrder]) -> np.ndarray:
