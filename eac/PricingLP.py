@@ -80,6 +80,8 @@ class GlobalPricingLP:
          (covers the parent's contribution via the basket aggregate)
       4. LOOP FAMILIES: total surplus across ALL baskets in the family >= 0
       5. PQR / NQR products: MCP >= £0.00  (product-specific floor)
+      6. NON-PARADOXICAL BUY ORDERS: MCP <= buy_price for accepted orders
+         with paradoxical=False (spec Section 7.1.2)
 
     Objective (spec Section 7.2):
       Minimise procurement cost = sum( MCP * accepted_qty ) over all accepted sell orders.
@@ -99,9 +101,9 @@ class GlobalPricingLP:
     def solve(
         self,
         multi_orders: List[MultiProductOrder],
-        buy_orders: List[BuyOrder],          # kept for API compatibility; not used in pricing
+        buy_orders: List[BuyOrder],
         basket_to_loop: Dict[int, List[int]] = None,
-        buy_acceptance: Dict[str, float] = None,  # kept for API compatibility; not used
+        buy_acceptance: Dict[str, float] = None,
     ) -> Tuple[Dict[Tuple[str, Tuple], float], pulp.LpProblem, str]:
 
         basket_to_loop = basket_to_loop or defaultdict(list)
@@ -195,7 +197,7 @@ class GlobalPricingLP:
                 loop_expr = pulp.lpSum(loop_terms) + loop_constant
                 price_prob += loop_expr >= 0.0, f"loop_family_surplus_{loop_id}"
 
-        # Constraint 5: PQR / NQR floor at £0.00
+        # ── Constraint 5: PQR / NQR floor at £0.00 ────────────────────────────
         for product, window in active_product_windows:
             if product in ("PQR", "NQR"):
                 var_mcp = p_vars.get((product, window))
@@ -205,6 +207,22 @@ class GlobalPricingLP:
                         f"min_price_zero_{product}_{window[0]}_{window[1]}",
                     )
 
+        # ── Constraint 6: Non-paradoxical buy orders (spec Section 7.1.2) ────
+        # If paradoxical=False and the order is accepted, MCP must not exceed
+        # the buy order's limit price (otherwise the order would be
+        # paradoxically accepted, which the Buyer has disallowed).
+        for b in buy_orders:
+            acceptance = buy_acceptance.get(b.orderID, 1.0) if buy_acceptance else 1.0
+            if not b.paradoxical and b.quantity > 0 and acceptance > ACCEPTANCE_EPS:
+                window = (b.deliveryStart, b.deliveryEnd)
+                var_mcp = p_vars.get((b.auctionProduct, window))
+                if var_mcp is not None:
+                    price_prob += (
+                        var_mcp <= b.price,
+                        f"non_paradoxical_buy_{b.orderID}",
+                    )
+
+        # ── Solve ──────────────────────────────────────────────────────────────
         status = self.backend.solve(price_prob)
         status_str = pulp.LpStatus[status]
 
