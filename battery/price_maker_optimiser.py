@@ -85,11 +85,12 @@ class PriceMakerOptimiser:
         optimal_alpha = result.x
         
         # Compute final profit and SOH at optimal alpha, updating the actual battery
-        _, _, final_profit, final_soh, global_energy_trajectory, global_power_trajectory, global_temp_trajectory, global_soh_trajectory = self._apply_optimal_solution(optimal_alpha, meu, battery)
+        revenue, _, final_profit, final_soh, global_energy_trajectory, global_power_trajectory, global_temp_trajectory, global_soh_trajectory = self._apply_optimal_solution(optimal_alpha, meu, battery)
         
         return {
             "status": "Optimal" if result.success else "Failed",
             "objective_value": final_profit,
+            "revenue": revenue,
             "optimal_alpha": optimal_alpha,
             "SOH": final_soh,
             "iterations": result.nfev,

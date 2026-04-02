@@ -5,7 +5,8 @@ from battery.battery import VolkanBattery
 AUCTION_IDS = 1112
 
 if __name__ == "__main__":
-    meu = [6e7]  # Example MEU values to test
+    # 50 meu = [1e6, 5e6, 1e7, 1.5e7, 2e7, 2.3e7, 2.6e7, 3e7]
+    meu = [1e7, 2e7, 3e7, 4e7,4.5e7, 5e7, 6e7, 7e7]
     cumulative_profit = 0.0
 
 
@@ -22,6 +23,7 @@ if __name__ == "__main__":
         print(f"The meu value is: {m}")
         print(f"Solver status: {result['status']}")
         print(f"Optimal alpha: {result['optimal_alpha']}")
+        print(f"Revenue: {result['revenue']}")
         print(f"Objective value (profit): {result['objective_value']}")
         print(f"SOH is: {result['SOH']}")
 

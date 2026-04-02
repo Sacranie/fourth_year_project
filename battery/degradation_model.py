@@ -44,8 +44,9 @@ class degradation_model:
         power_profile = self.build_power_profile_from_orders(multi_product_orders)
         
         if len(power_profile) == 0:
-            return 0.0, battery.soh if battery.soh is not None else battery.settings['SOH0']
-        
+            soh = battery.soh if battery.soh is not None else battery.settings['SOH0']
+            return 0.0, soh, [], [], [], []
+
         # Scale the power profile by alpha
         scaled_power_profile = power_profile * alpha
         
