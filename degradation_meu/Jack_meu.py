@@ -9,7 +9,7 @@ class JackMeu:
         self.degradation_history = deque()
         self.target_degradation = target_degradation
         self.dual_variable = dual_variable
-        self.meu_max = 1e7  # Maximum MEU value for normalization
+        self.meu_max = 6e7  # Maximum MEU value for normalization
         self.meu_min = 0  # Minimum MEU value for normalization
     
     def computation(self, current_revenue, current_degradation):
@@ -31,7 +31,7 @@ class JackMeu:
         upper_bound_thi = self.meu_max + lower_bound_thi
 
         self.thi = self.update_dual_varaible(lower_bound_thi, upper_bound_thi, subgradient)
-        self.meu_value = self.thi + avg_meu
+        self.meu = self.thi + avg_meu
 
     
     def update_dual_varaible(self, lower_bound, upper_bound, subgradient):

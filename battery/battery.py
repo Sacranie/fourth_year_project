@@ -44,7 +44,7 @@ class VolkanBattery:
                     'duration': 24*365*10, # 10 years
                     'C-rate': [1.0, 1.0], # C-rate for charge and discharge
                     'lambda_cal': 1.0,
-                    'lambda_cyc': 10.0,
+                    'lambda_cyc': 25.0,
                     'dt' : 15/3600, # 15 s timestep in hours
                     'EOL': 0.8,
                     'price_kWhcap' : 250,
