@@ -238,6 +238,7 @@ if __name__ == "__main__":
 
     match_percentages = []
     procurement_costs = []
+    errors_by_product = {"DCH": [], "DML": []}
     auction_ids = [1112, 1114, 1116, 1118, 1120, 1122, 1124, 1126, 1128, 1130, 1132, 1134, 1136, 1138, 1140, 1142, 1144, 1146, 1148, 1150, 1152, 1154, 1156, 1158, 1189, 1222, 1224, 1226, 1228, 1230, 1232, 1234, 1236, 1255, 1257, 1259, 1261, 1263, 1288, 1290, 1292, 1294, 1296, 1298, 1300]
     auction_index = 0
     for auction_id in auction_ids:
@@ -272,12 +273,35 @@ if __name__ == "__main__":
         print(procurement_cost_LP)
         match_percentages.append((auction_index, match_pct))
         procurement_costs.append((auction_index, procurement_cost_API_value, procurement_cost_LP))
-        
-        if auction_id == 1236:
-            print_price_comparison(computed_prices, data["expected_prices"])
+
+        # Collect per-window errors for DCH and DML
+        for (product, window), exp_price in data["expected_prices"].items():
+            if product not in errors_by_product:
+                continue
+            comp_price = computed_prices.get((product, window))
+            if comp_price is not None:
+                errors_by_product[product].append(abs(exp_price - comp_price))
+
+        # if auction_id == 1236:
+            # print_price_comparison(computed_prices, data["expected_prices"])
         auction_index += 1
 
-
+    import numpy as np
+    print("\n" + "=" * 60)
+    print("PREDICTION ERROR SUMMARY (MAE per window) — DCH & DML")
+    print("=" * 60)
+    for product, errs in errors_by_product.items():
+        if not errs:
+            print(f"\n  {product}: no data")
+            continue
+        errs = np.array(errs)
+        print(f"\n  {product}")
+        print(f"    Count  : {len(errs)}")
+        print(f"    MAE    : {np.mean(errs):.4f}")
+        print(f"    Std    : {np.std(errs):.4f}")
+        print(f"    Min    : {np.min(errs):.4f}")
+        print(f"    Median : {np.median(errs):.4f}")
+        print(f"    Max    : {np.max(errs):.4f}")
 
     # Plot a graph of accuracy over auction IDs
     import matplotlib.pyplot as plt

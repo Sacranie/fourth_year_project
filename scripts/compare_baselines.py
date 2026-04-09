@@ -7,7 +7,7 @@ from degradation_meu.Jack_meu import JackMeu
 from scripts.degradation_cause import AUCTION_IDS
 
 
-def compare_methods(auction_ids, data_location='data/', constant_meu=3e7):
+def compare_methods(auction_ids, data_location='data/', constant_meu=2e7):
     # --- Initialise both methods ---
     battery_const = VolkanBattery()
     battery_const.populate_with_volkan_parameters(data_location=data_location)
@@ -15,40 +15,61 @@ def compare_methods(auction_ids, data_location='data/', constant_meu=3e7):
     battery_jack = VolkanBattery()
     battery_jack.populate_with_volkan_parameters(data_location=data_location)
 
-    T = len(auction_ids)
-    LIFETIME_AUCTIONS = 10 * T  # 10-year battery lifetime
-    jack = JackMeu(meu=30e6, window=30, step_size=(np.log(T) / T) ** 0.5, target_degradation=0.2 / LIFETIME_AUCTIONS, dual_variable=0.0)
+    WARMUP = 30
+    T_eval = len(auction_ids) - WARMUP          # auctions used for evaluation
+    LIFETIME_AUCTIONS = 10 * 365                # 10-year lifetime in days
+
+    # target_degradation = rho = B/T_total (allowable degradation per auction over full lifetime)
+    # step_size = sqrt(log(T_eval) / T_eval) as per paper
+    jack = JackMeu(meu=2e7, window=WARMUP, step_size=(np.log(T_eval) / T_eval) ** 0.5, target_degradation=0.2 / LIFETIME_AUCTIONS, dual_variable=0.0)
 
     const_revenues, const_sohs, const_alphas = [], [1.0], []
     jack_revenues, jack_sohs, jack_alphas, jack_meus = [], [1.0], [], []
 
-    for auction_id in auction_ids:
-        const_alive = battery_const.soh >= 0.8
-        jack_alive = battery_jack.soh >= 0.8
+    warmup_ids = auction_ids[:WARMUP]
+    eval_ids = auction_ids[WARMUP:]
 
-        if not const_alive and not jack_alive:
-            break
+    # --- Warm-up: fill JackMeu's rolling window only, then reset both batteries to SOH=1.0 ---
+    print(f"Warming up over {WARMUP} auctions...")
+    warmup_soh_tracker = 1.0
+    for auction_id in warmup_ids:
+        optimiser = PriceMakerOptimiser(auction_id)
+        optimiser.load_data_without_clearing_market()
+
+        current_meu = jack.meu
+        result = optimiser.solve(0.0, 3.2, meu=current_meu, battery=battery_jack)
+        degradation = warmup_soh_tracker - result['SOH']
+        warmup_soh_tracker = result['SOH']
+        jack.computation(result['revenue'], degradation)
+
+    # Reset both batteries to SOH=1.0 — warm-up was purely for filling JackMeu's window
+    battery_const.initialize_state(soh=1.0)
+    battery_jack.initialize_state(soh=1.0)
+    print("Warm-up complete. Both batteries reset to SOH=1.0")
+
+    # --- Evaluation ---
+    for auction_id in eval_ids:
+        print(f"Processing auction: {auction_id}")
 
         # Load data once per auction — both methods reuse the cache
         optimiser = PriceMakerOptimiser(auction_id)
         optimiser.load_data_without_clearing_market()
 
-        if const_alive:
-            result = optimiser.solve(0.0, 3.2, meu=constant_meu, battery=battery_const)
-            const_revenues.append(result['revenue'])
-            const_sohs.append(result['SOH'])
-            const_alphas.append(result['optimal_alpha'])
+        result = optimiser.solve(0.0, 3.2, meu=constant_meu, battery=battery_const)
+        const_revenues.append(result['revenue'])
+        const_sohs.append(result['SOH'])
+        const_alphas.append(result['optimal_alpha'])
+        print(f"The sum of the revenues for the constant MEU method is: {sum(const_revenues):.2f} and the SOH is: {result['SOH']:.4f}")
 
-        if jack_alive:
-            current_meu = jack.meu
-            jack_meus.append(current_meu)
-            result = optimiser.solve(0.0, 3.2, meu=current_meu, battery=battery_jack)
-            degradation = jack_sohs[-1] - result['SOH']
-            jack.computation(result['revenue'], degradation)
-            jack_revenues.append(result['revenue'])
-            jack_sohs.append(result['SOH'])
-            jack_alphas.append(result['optimal_alpha'])
-
+        current_meu = jack.meu
+        jack_meus.append(current_meu)
+        result = optimiser.solve(0.0, 3.2, meu=current_meu, battery=battery_jack)
+        degradation = jack_sohs[-1] - result['SOH']
+        jack.computation(result['revenue'], degradation)
+        jack_revenues.append(result['revenue'])
+        jack_sohs.append(result['SOH'])
+        jack_alphas.append(result['optimal_alpha'])
+        print(f"The sum of the revenues for the JackMeu method is: {sum(jack_revenues):.2f} and the SOH is: {result['SOH']:.4f}")
     return [
         {
             'method': f'Constant MEU={constant_meu:.0e}',

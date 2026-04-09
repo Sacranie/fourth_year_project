@@ -1,7 +1,6 @@
 from battery.price_maker_optimiser import PriceMakerOptimiser
 from battery.battery import VolkanBattery
 import matplotlib.pyplot as plt
-from multiprocessing import Pool, cpu_count
 
 # Constants
 AUCTION_IDS = [1112, 1114, 1116, 1118, 1120, 1122, 1124, 1126, 1128, 1130, 1132, 
@@ -37,69 +36,70 @@ AUCTION_IDS = [1112, 1114, 1116, 1118, 1120, 1122, 1124, 1126, 1128, 1130, 1132,
                2608, 2641, 2642, 2643, 2644, 2645, 2646, 2647, 2648]
 
 
-def process_meu(meu):
-    """Process a single meu value and return the cumulative revenue."""
-    cumulative_revenue = 0.0
-    battery = VolkanBattery()
-    battery.populate_with_volkan_parameters(data_location='data/')
-    soh = 1.0
-
-    for i, auction_id in enumerate(AUCTION_IDS, 1):
-        optimiser = PriceMakerOptimiser(auction_id)
-
-        # Define bounds for alpha (the fraction of the order to accept)
-        lower_alpha = 0.0
-        upper_alpha = 3.2
-
-        result = optimiser.solve(lower_alpha, upper_alpha, meu=meu, battery=battery)
-
-        # Print the results
-        print(f"The meu value is: {meu}")
-        print(f"Optimal alpha: {result['optimal_alpha']}")
-        print(f"SOH is: {result['SOH']}")
-        cumulative_revenue += result['revenue']
-        print(f"Cumulative revenue so far: {cumulative_revenue}")
-        if result['SOH'] != 1.0:
-            yearly_degradation = (1 - result['SOH']) * (300 / i)
-            years_to_eol = min(0.2 / yearly_degradation, 10)
-            yearly_revenue = cumulative_revenue * (300 / i)
-            expected_total = years_to_eol * yearly_revenue
-            print(f"Expected total revenue at end of simulation: {expected_total}")
-        soh = result['SOH']
-        if soh < 0.8:
-            break
-
-    days_simulated = len(AUCTION_IDS) if soh >= 0.8 else i
-    if soh >= 1.0:
-        total = cumulative_revenue
-    else:
-        yearly_degradation = (1 - soh) * (300 / days_simulated)
-        years_to_eol = min(0.2 / yearly_degradation, 10)
-        yearly_revenue = cumulative_revenue * (300 / days_simulated)
-        total = years_to_eol * yearly_revenue
-
-    return meu, total
-
-
 if __name__ == "__main__":
     meus = [8e6, 9e6, 1e7, 2e7, 3e7, 4e7, 5e7, 6e7]
-    
-    # Use multiprocessing to parallelize across meu values
-    num_workers = min(cpu_count(), len(meus))
-    print(f"Starting multiprocessing with {num_workers} workers...")
-    
-    with Pool(processes=num_workers) as pool:
-        results = pool.map(process_meu, meus)
-    
-    # Sort results by meu to maintain order and extract revenues
-    results.sort(key=lambda x: x[0])
-    revenues = [revenue for _, revenue in results]
+
+    # Per-meu state
+    batteries = {meu: VolkanBattery() for meu in meus}
+    for battery in batteries.values():
+        battery.populate_with_volkan_parameters(data_location='data/')
+
+    cumulative_revenues = {meu: 0.0 for meu in meus}
+    sohs = {meu: 1.0 for meu in meus}
+    days_simulated = {meu: 0 for meu in meus}
+    alive = {meu: True for meu in meus}
+
+    for i, auction_id in enumerate(AUCTION_IDS, 1):
+        if not any(alive.values()):
+            break
+
+        # Load auction data once — reused by all meu solves via cache
+        optimiser = PriceMakerOptimiser(auction_id)
+        optimiser.load_data_without_clearing_market()
+
+        for meu in meus:
+            if not alive[meu]:
+                continue
+
+            result = optimiser.solve(0.0, 3.2, meu=meu, battery=batteries[meu])
+            cumulative_revenues[meu] += result['revenue']
+            sohs[meu] = result['SOH']
+            days_simulated[meu] = i
+
+            soh = result['SOH']
+            if soh != 1.0:
+                yearly_degradation = (1 - soh) * (300 / i)
+                years_to_eol = min(0.2 / yearly_degradation, 10)
+                yearly_revenue = cumulative_revenues[meu] * (300 / i)
+                expected_total = years_to_eol * yearly_revenue
+                print(f"meu={meu:.0e} | alpha={result['optimal_alpha']:.3f} | SOH={soh:.4f} | cumrev={cumulative_revenues[meu]:.0f} | expected_total={expected_total:.0f}")
+
+            if soh < 0.8:
+                alive[meu] = False
+
+    # Compute final lifetime revenue estimate per meu
+    totals = []
+    for meu in meus:
+        soh = sohs[meu]
+        d = days_simulated[meu]
+        cumrev = cumulative_revenues[meu]
+        if soh >= 1.0:
+            total = cumrev
+        else:
+            yearly_degradation = (1 - soh) * (300 / d)
+            years_to_eol = min(0.2 / yearly_degradation, 10)
+            yearly_revenue = cumrev * (300 / d)
+            total = years_to_eol * yearly_revenue
+        totals.append(total)
+        print(f"meu={meu:.0e} | final SOH={soh:.4f} | lifetime revenue estimate=£{total:.0f}")
 
     plt.figure(figsize=(10, 6))
-    plt.plot(meus, revenues, marker='o')
+    plt.plot(meus, totals, marker='o')
     plt.xlabel('MEU')
-    plt.ylabel('Cumulative Revenue')
-    plt.title('Cumulative Revenue vs MEU')
+    plt.ylabel('Estimated Lifetime Revenue (£)')
+    plt.title('Estimated Lifetime Revenue vs MEU')
     plt.grid(True)
+    plt.savefig('scripts/revenue_vs_meu.png', dpi=150, bbox_inches='tight')
+    print("Plot saved to scripts/revenue_vs_meu.png")
     plt.show()
 
